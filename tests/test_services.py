@@ -31,15 +31,16 @@ def test_create_duplicate_user(app):
             UserService.create_user("duplicate@example.com", "dup2", is_admin=False)
 
 
-def test_delete_user(app, member_user, admin_user):
+def test_delete_user(app, admin_user):
     with app.app_context():
-        member = User.query.filter_by(email="member@test.com").first()
+        # Create a second user to delete
+        other_user, _ = UserService.create_user("delete@test.com", "deleteuser", is_admin=False)
         admin = User.query.filter_by(email="admin@test.com").first()
 
-        success, message = UserService.delete_user(member.id, admin.id)
+        success, message = UserService.delete_user(other_user.id, admin.id)
 
         assert success is True
-        assert User.query.filter_by(id=member.id).first() is None
+        assert User.query.filter_by(id=other_user.id).first() is None
 
 
 def test_cannot_delete_self(app, admin_user):
@@ -51,18 +52,18 @@ def test_cannot_delete_self(app, admin_user):
         assert success is False
 
 
-def test_update_user_roles(app, member_user):
+def test_update_user_roles(app, admin_user):
     with app.app_context():
-        member = User.query.filter_by(email="member@test.com").first()
+        # Create a user to update
+        test_user, _ = UserService.create_user("roletest@test.com", "roleuser", is_admin=False)
+        admin = User.query.filter_by(email="admin@test.com").first()
 
-        success, message = UserService.update_user_roles(
-            member.id, ["member", "door_admin"], member.id
-        )
+        # Give user admin role
+        success, message = UserService.update_user_roles(test_user.id, ["admin"], admin.id)
 
         assert success is True
-        role_names = [r.name for r in member.roles]
-        assert "member" in role_names
-        assert "door_admin" in role_names
+        role_names = [r.name for r in test_user.roles]
+        assert "admin" in role_names
 
 
 def test_create_role(app):

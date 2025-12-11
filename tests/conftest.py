@@ -33,11 +33,8 @@ def app():
         db.create_all()
 
         admin_role = Role(name="admin", description="Administrator")
-        member_role = Role(name="member", description="Member")
-        door_admin_role = Role(name="door_admin", description="Door Admin")
-        guest_role = Role(name="guest", description="Guest")
 
-        db.session.add_all([admin_role, member_role, door_admin_role, guest_role])
+        db.session.add(admin_role)
         db.session.commit()
 
         yield app
@@ -77,23 +74,6 @@ def authenticated_client(app, admin_user):
 
 
 @pytest.fixture()
-def member_authenticated_client(app, member_user):
-    """Test client with member user pre-authenticated.
-
-    Yields:
-        Flask test client with active session
-    """
-    client = app.test_client()
-    with client:
-        client.post(
-            "/login",
-            data={"email": "member@test.com", "password": "memberpass"},
-            follow_redirects=True,
-        )
-        yield client
-
-
-@pytest.fixture()
 def admin_user(app):
     """Create a test admin user.
 
@@ -124,64 +104,4 @@ def admin_user(app):
         user_id = user.id
 
     # Return a function that fetches the user within an app_context
-    return user_id
-
-
-@pytest.fixture()
-def member_user(app):
-    """Create a test member user.
-
-    Returns user_id to avoid DetachedInstanceError.
-
-    Returns:
-        User ID (int)
-    """
-    import uuid
-
-    from flask_security.utils import hash_password
-
-    with app.app_context():
-        member_role = Role.query.filter_by(name="member").first()
-        user = User(
-            email="member@test.com",
-            username="member",
-            password=hash_password("memberpass"),
-            active=True,
-            fs_uniquifier=str(uuid.uuid4()),
-            roles=[member_role],
-        )
-        db.session.add(user)
-        db.session.commit()
-        user_id = user.id
-
-    return user_id
-
-
-@pytest.fixture()
-def guest_user(app):
-    """Create a test guest user.
-
-    Returns user_id to avoid DetachedInstanceError.
-
-    Returns:
-        User ID (int)
-    """
-    import uuid
-
-    from flask_security.utils import hash_password
-
-    with app.app_context():
-        guest_role = Role.query.filter_by(name="guest").first()
-        user = User(
-            email="guest@test.com",
-            username="guest",
-            password=hash_password("guestpass"),
-            active=True,
-            fs_uniquifier=str(uuid.uuid4()),
-            roles=[guest_role],
-        )
-        db.session.add(user)
-        db.session.commit()
-        user_id = user.id
-
     return user_id

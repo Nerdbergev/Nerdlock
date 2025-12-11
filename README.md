@@ -12,7 +12,7 @@ Das Ganze läuft auf einem Raspberry Pi, der per Bluetooth mit euren Nuki-Schlö
 
 - **Türsteuerung**: Unlock, Lock, Unlatch per Webinterface
 - **Passkeys**: Passwordless Login mit Fingerabdruck oder Face ID
-- **Rollenverwaltung**: Admin, Member, Guest, Door-Admin - wer darf was
+- **Admin-Verwaltung**: User-Verwaltung und Rollenzuweisung
 - **Zugriffslogs**: Wer hat wann welche Tür geöffnet
 - **Nuki-Integration**: Batteriestatus und automatische Status-Updates
 - **Mail-Benachrichtigungen**: Neue User bekommen ihre Zugangsdaten per Mail
@@ -274,9 +274,10 @@ User bekommt eine Mail mit Passwort. Danach kann er sich einloggen und ein Passk
 
 ### Rollen verwalten
 
-- **admin**: Volle Kontrolle, User-Verwaltung
+Aktuell gibt es nur die **admin** Rolle:
+- **admin**: Volle Kontrolle über alle Türen und User-Verwaltung
 
-Rollen können pro User im Admin-Panel gesetzt werden.
+Weitere Rollen können bei Bedarf über das Migrations-System hinzugefügt werden.
 
 ### Türen steuern
 
