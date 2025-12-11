@@ -1,6 +1,5 @@
 {# app/templates/security/login_user.html #}
 {% extends "base.html" %}
-{% from "security/_macros.html" import render_field_with_errors, render_field %}
 
 {% block title %}Login{% endblock %}
 
@@ -8,25 +7,49 @@
   <div class="terminal-box">
     <h1>System Authentication</h1>
 
+    {% if login_user_form.errors %}
+      <div style="color: #ff6b6b; margin-bottom: 15px;">
+        {% for field_name, errors in login_user_form.errors.items() %}
+          {% for error in errors %}
+            <p>{{ field_name }}: {{ error }}</p>
+          {% endfor %}
+        {% endfor %}
+      </div>
+    {% endif %}
+
     <h2>Standard Login</h2>
     <form action="{{ url_for('security.login') }}" method="POST" name="login_user_form">
       {{ login_user_form.hidden_tag() }}
 
       <div>
         <label for="email">User Identifier:</label>
-        {{ render_field_with_errors(login_user_form.email) }}
+        {{ login_user_form.email(class="terminal-input") }}
+        {% if login_user_form.email.errors %}
+          <div style="color: #ff6b6b;">
+            {% for error in login_user_form.email.errors %}
+              <small>{{ error }}</small>
+            {% endfor %}
+          </div>
+        {% endif %}
       </div>
 
       <div>
         <label for="password">Access Key:</label>
-        {{ render_field_with_errors(login_user_form.password) }}
+        {{ login_user_form.password(class="terminal-input") }}
+        {% if login_user_form.password.errors %}
+          <div style="color: #ff6b6b;">
+            {% for error in login_user_form.password.errors %}
+              <small>{{ error }}</small>
+            {% endfor %}
+          </div>
+        {% endif %}
       </div>
 
       <div>
-        {{ render_field(login_user_form.remember) }}
+        {{ login_user_form.remember() }} <label for="remember">{{ login_user_form.remember.label.text }}</label>
       </div>
 
-      {{ render_field(login_user_form.submit) }}
+      {{ login_user_form.submit(class="terminal-button") }}
     </form>
   </div>
 

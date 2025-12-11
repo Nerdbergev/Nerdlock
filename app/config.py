@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent
-print(BASE_DIR)
+INSTANCE_DIR = BASE_DIR / "instance"
 
 
 class Config:
@@ -19,7 +19,7 @@ class Config:
 
     SECRET_KEY = os.environ.get("SECRET_KEY")
     SQLALCHEMY_DATABASE_URI = os.environ.get(
-        "DATABASE_URL", f"sqlite:///{BASE_DIR / 'nerdlock.db'}"
+        "DATABASE_URL", f"sqlite:///{INSTANCE_DIR / 'nerdlock.db'}"
     )
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 

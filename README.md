@@ -16,6 +16,7 @@ Das Ganze läuft auf einem Raspberry Pi, der per Bluetooth mit euren Nuki-Schlö
 - **Zugriffslogs**: Wer hat wann welche Tür geöffnet
 - **Nuki-Integration**: Batteriestatus und automatische Status-Updates
 - **Mail-Benachrichtigungen**: Neue User bekommen ihre Zugangsdaten per Mail
+- **Migrations-System**: Datenbank-Setup per Flask-Migrate
 
 ## Hardware
 
@@ -72,8 +73,8 @@ Inhalt (anpassen!):
 SECRET_KEY=hier-ein-langer-zufälliger-string-generieren
 SECURITY_PASSWORD_SALT=noch-ein-zufälliger-salt
 
-# Datenbank (SQLite ist ok für kleine Spaces)
-DATABASE_URL=sqlite:///nerdlock.db
+# Datenbank (SQLite, wird in instance/ erstellt)
+# DATABASE_URL wird automatisch auf instance/nerdlock.db gesetzt
 
 # Mail (für User-Einladungen)
 MAIL_SERVER=smtp.example.com
@@ -110,39 +111,24 @@ python3 -c "import secrets; print(secrets.token_hex(32))"
 
 ### 5. Datenbank initialisieren
 
+Die Datenbank wird mit Flask-Migrate initialisiert:
+
 ```bash
 source .venv/bin/activate
-python3 << EOF
-from app import create_app
-from app.extensions import db
-from app.models import User, Role
-from flask_security.utils import hash_password
-import uuid
-
-app = create_app()
-with app.app_context():
-    db.create_all()
-
-    # Admin-Rolle erstellen
-    admin_role = Role(name="admin", description="Administrator")
-    member_role = Role(name="member", description="Mitglied")
-    db.session.add_all([admin_role, member_role])
-    db.session.commit()
-
-    # Ersten Admin erstellen
-    admin = User(
-        email="admin@example.com",  # ANPASSEN!
-        username="admin",
-        password=hash_password("change-me-now"),  # PASSWORT ÄNDERN!
-        active=True,
-        fs_uniquifier=str(uuid.uuid4()),
-        roles=[admin_role]
-    )
-    db.session.add(admin)
-    db.session.commit()
-    print("Admin erstellt: admin@example.com / change-me-now")
-EOF
+flask db upgrade
 ```
+
+Dies erstellt:
+- Die Datenbank in `instance/nerdlock.db`
+- Alle Tabellen (User, Role, WebAuthnCredential, DoorAccessLog)
+- Einen initialen Admin-User:
+  - **Email**: `admin@nerdberg.de`
+  - **Username**: `admin`
+  - **Passwort**: `changeme`
+
+**WICHTIG**: Ändere das Admin-Passwort nach dem ersten Login!
+
+Siehe `migrations/README.md` für weitere Details zum Migrations-System.
 
 ### 6. Nuki pairen (optional)
 
@@ -298,6 +284,21 @@ Filter nach Tür und Aktion möglich.
 ```bash
 source .venv/bin/activate
 pytest tests/
+```
+
+Aktuell: 32 Tests, alle sollten bestehen
+
+### Datenbank-Migrations
+
+```bash
+# Neue Migration erstellen (nach Model-Änderungen)
+flask db migrate -m "Beschreibung"
+
+# Migration anwenden
+flask db upgrade
+
+# Migration rückgängig machen
+flask db downgrade
 ```
 
 ### Pre-commit hooks installieren
