@@ -1,0 +1,104 @@
+{# app/templates/security/login_user.html #}
+{% extends "base.html" %}
+{% from "security/_macros.html" import render_field_with_errors, render_field %}
+
+{% block title %}Login{% endblock %}
+
+{% block content %}
+  <div class="terminal-box">
+    <h1>System Authentication</h1>
+
+    <h2>Standard Login</h2>
+    <form action="{{ url_for('security.login') }}" method="POST" name="login_user_form">
+      {{ login_user_form.hidden_tag() }}
+
+      <div>
+        <label for="email">User Identifier:</label>
+        {{ render_field_with_errors(login_user_form.email) }}
+      </div>
+
+      <div>
+        <label for="password">Access Key:</label>
+        {{ render_field_with_errors(login_user_form.password) }}
+      </div>
+
+      <div>
+        {{ render_field(login_user_form.remember) }}
+      </div>
+
+      {{ render_field(login_user_form.submit) }}
+    </form>
+  </div>
+
+  <div class="terminal-box">
+    <h2>Biometric Authentication</h2>
+    <p style="color: var(--text-dim); margin-bottom: 15px;">
+      // Passwordless authentication using WebAuthn
+    </p>
+    <button id="passkey-login" type="button">Authenticate with Passkey</button>
+    <pre id="status" style="margin-top: 15px;"></pre>
+  </div>
+
+  <script>
+  function bufferDecode(value) {
+    return Uint8Array.from(atob(value.replace(/-/g, '+').replace(/_/g, '/')),
+                           c => c.charCodeAt(0));
+  }
+  function bufferEncode(value) {
+    return btoa(String.fromCharCode.apply(null, new Uint8Array(value)))
+      .replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+  }
+
+  document.getElementById("passkey-login").addEventListener("click", async () => {
+    const status = document.getElementById("status");
+    status.textContent = "> Initializing passkey authentication...";
+
+    const optionsRes = await fetch("{{ url_for('auth.webauthn_login_begin') }}", {
+      method: "POST"
+    });
+    if (!optionsRes.ok) {
+      status.textContent = "[ERROR] " + (await optionsRes.text());
+      return;
+    }
+
+    const options = await optionsRes.json();
+    options.challenge = bufferDecode(options.challenge);
+
+    status.textContent = "> Waiting for authenticator...";
+    let cred;
+    try {
+      cred = await navigator.credentials.get({ publicKey: options });
+    } catch (e) {
+      status.textContent = "[ERROR] Authentication cancelled: " + e;
+      return;
+    }
+
+    status.textContent = "> Verifying credentials...";
+    const authResponse = {
+      id: cred.id,
+      rawId: bufferEncode(cred.rawId),
+      type: cred.type,
+      response: {
+        authenticatorData: bufferEncode(cred.response.authenticatorData),
+        clientDataJSON: bufferEncode(cred.response.clientDataJSON),
+        signature: bufferEncode(cred.response.signature),
+        userHandle: cred.response.userHandle ? bufferEncode(cred.response.userHandle) : null
+      }
+    };
+
+    const verifyRes = await fetch("{{ url_for('auth.webauthn_login_complete') }}", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(authResponse)
+    });
+
+    if (verifyRes.ok) {
+      status.textContent = "[SUCCESS] Authentication complete. Redirecting...";
+      const redirectUrl = "{{ request.args.get('next') or url_for('main.index') }}";
+      setTimeout(() => window.location.href = redirectUrl, 1000);
+    } else {
+      status.textContent = "[ERROR] Authentication failed: " + (await verifyRes.text());
+    }
+  });
+  </script>
+{% endblock %}

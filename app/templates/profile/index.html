@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+
+{% block title %}My Profile{% endblock %}
+
+{% block content %}
+<div class="terminal-box">
+  <h1>User Profile</h1>
+  <p style="color: var(--text-dim);">// Manage your account settings</p>
+</div>
+
+<div class="terminal-box">
+  <h2>Account Information</h2>
+
+  <div style="background: var(--bg-tertiary); padding: 20px; border-radius: 4px; margin-bottom: 20px;">
+    <div class="profile-grid">
+      <div><strong>User ID:</strong></div>
+      <div><code>{{ current_user.id }}</code></div>
+
+      <div><strong>Email:</strong></div>
+      <div style="word-break: break-all;">{{ current_user.email }}</div>
+
+      <div><strong>Username:</strong></div>
+      <div>{{ current_user.username or '-' }}</div>
+
+      <div><strong>Roles:</strong></div>
+      <div>
+        {% for role in current_user.roles %}
+          <span class="role-tag {% if role.name == 'admin' %}admin{% endif %}">{{ role.name }}</span>
+        {% endfor %}
+      </div>
+
+      <div><strong>Status:</strong></div>
+      <div>
+        {% if current_user.active %}
+          <span class="status-badge active">ACTIVE</span>
+        {% else %}
+          <span class="status-badge inactive">INACTIVE</span>
+        {% endif %}
+      </div>
+
+      <div><strong>Last Login:</strong></div>
+      <div>{{ current_user.last_login_at.strftime('%Y-%m-%d %H:%M:%S') if current_user.last_login_at else 'Never' }}</div>
+
+      <div><strong>Login Count:</strong></div>
+      <div>{{ current_user.login_count }}</div>
+
+      <div><strong>Passkeys:</strong></div>
+      <div>{{ passkey_count }}</div>
+
+      <div style="color: var(--terminal-cyan);"><strong>Door Access:</strong></div>
+      <div>{{ access_count }} actions logged</div>
+    </div>
+  </div>
+</div>
+
+<div class="terminal-box">
+  <h2>Change Email Address</h2>
+  <form method="post" action="{{ url_for('profile.change_email') }}" style="max-width: 600px;">
+    <div>
+      <label>Current Email:</label>
+      <input type="text" value="{{ current_user.email }}" disabled style="opacity: 0.6;">
+    </div>
+
+    <div>
+      <label>New Email Address:</label>
+      <input name="new_email" type="email" required placeholder="new@example.com">
+    </div>
+
+    <div>
+      <label>Confirm Password:</label>
+      <input name="password" type="password" required placeholder="Your current password">
+      <p style="color: var(--text-dim); font-size: 12px; margin-top: 5px;">
+        // Password required for security verification
+      </p>
+    </div>
+
+    <button type="submit">Update Email</button>
+  </form>
+</div>
+
+<div class="terminal-box">
+  <h2>Change Username</h2>
+  <form method="post" action="{{ url_for('profile.change_username') }}" style="max-width: 600px;">
+    <div>
+      <label>Current Username:</label>
+      <input type="text" value="{{ current_user.username or '(not set)' }}" disabled style="opacity: 0.6;">
+    </div>
+
+    <div>
+      <label>New Username:</label>
+      <input name="new_username" type="text" placeholder="username (optional)">
+      <p style="color: var(--text-dim); font-size: 12px; margin-top: 5px;">
+        // Leave empty to remove username
+      </p>
+    </div>
+
+    <button type="submit">Update Username</button>
+  </form>
+</div>
+
+<div class="terminal-box">
+  <h2>Change Password</h2>
+  <p style="color: var(--text-dim); margin-bottom: 15px;">
+    Update your authentication credentials
+  </p>
+  <a href="{{ url_for('security.change_password') }}" class="btn" style="text-decoration: none; display: inline-block;">
+    Change Password →
+  </a>
+</div>
+
+<div class="terminal-box">
+  <h2>Biometric Authentication</h2>
+  <p style="color: var(--text-dim); margin-bottom: 15px;">
+    You have <strong style="color: var(--terminal-green);">{{ passkey_count }}</strong> passkey(s) registered
+  </p>
+  <a href="{{ url_for('auth.webauthn_manage') }}" class="btn" style="text-decoration: none; display: inline-block;">
+    Manage Passkeys →
+  </a>
+</div>
+
+<div class="terminal-box">
+  <h2>Account Actions</h2>
+  <div style="display: flex; gap: 15px; flex-wrap: wrap;">
+    <a href="{{ url_for('doors.index') }}" class="btn" style="text-decoration: none;">
+      Door Control
+    </a>
+    <a href="{{ url_for('doors.logs') }}" class="btn" style="text-decoration: none;">
+      My Access Logs
+    </a>
+    {% if current_user.has_role('admin') %}
+    <a href="{{ url_for('admin.admin_index') }}" class="btn" style="text-decoration: none;">
+      Admin Panel
+    </a>
+    {% endif %}
+  </div>
+</div>
+
+{% endblock %}

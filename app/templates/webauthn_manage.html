@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+
+{% block title %}Manage Passkeys{% endblock %}
+
+{% block content %}
+<div class="terminal-box">
+  <h1>Passkey Management</h1>
+  <p style="color: var(--text-dim); margin-bottom: 20px;">
+    // Register and manage biometric authentication for {{ current_user.email or current_user.username }}
+  </p>
+
+  <!-- Existing Passkeys -->
+  {% if current_user.webauthn_credentials %}
+  <div style="margin-bottom: 30px;">
+    <h3>Your Passkeys</h3>
+    <div style="display: flex; flex-direction: column; gap: 15px;">
+      {% for cred in current_user.webauthn_credentials %}
+      <div style="background: var(--bg-tertiary); padding: 15px; border: 1px solid var(--terminal-cyan); border-radius: 4px;">
+        <div style="display: flex; justify-content: space-between; align-items: start; gap: 15px; flex-wrap: wrap;">
+          <div style="flex: 1; min-width: 200px;">
+            <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 10px; flex-wrap: wrap;">
+              <strong style="color: var(--terminal-green); font-size: 16px;">
+                {{ cred.name or 'Unnamed Passkey' }}
+              </strong>
+              <span class="status-badge active" style="font-size: 10px;">ID: {{ cred.id }}</span>
+            </div>
+
+            <div style="font-size: 12px; color: var(--text-dim);">
+              <p><strong>Created:</strong> {{ cred.created_at.strftime('%Y-%m-%d %H:%M') }}</p>
+              <p><strong>Last Used:</strong> {{ cred.last_used_at.strftime('%Y-%m-%d %H:%M') if cred.last_used_at else 'Never' }}</p>
+              <p><strong>Sign Count:</strong> {{ cred.sign_count }}</p>
+            </div>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 8px; min-width: 150px; width: 100%; max-width: 250px;">
+            <!-- Rename Form -->
+            <form method="post" action="{{ url_for('auth.rename_credential', cred_id=cred.id) }}"
+                  style="display: flex; gap: 5px;">
+              <input type="text" name="name" placeholder="New name"
+                     value="{{ cred.name or '' }}"
+                     style="font-size: 12px; padding: 6px; flex: 1; min-width: 0;">
+              <button type="submit" style="font-size: 11px; padding: 6px 12px; white-space: nowrap;">Rename</button>
+            </form>
+
+            <!-- Delete Button -->
+            <form method="post" action="{{ url_for('auth.delete_credential', cred_id=cred.id) }}"
+                  onsubmit="return confirm('Delete this passkey?');">
+              <button type="submit" class="danger" style="width: 100%; font-size: 11px; padding: 6px;">Delete</button>
+            </form>
+          </div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Register New Passkey -->
+  <div style="background: var(--bg-tertiary); padding: 20px; border: 1px solid var(--terminal-green); border-radius: 4px; margin-bottom: 20px;">
+    <h3 style="margin-top: 0;">Register New Passkey</h3>
+    <p style="color: var(--text-dim); font-size: 13px; margin-bottom: 15px;">
+      Add a new biometric authentication method (fingerprint, face recognition, security key)
+    </p>
+    <button id="register" type="button">Register New Passkey</button>
+    <pre id="status" style="margin-top: 15px;"></pre>
+  </div>
+
+  <div class="terminal-box">
+    <h3>What are Passkeys?</h3>
+    <ul style="list-style: none; padding-left: 0; color: var(--text-dim);">
+      <li style="margin: 10px 0;"><span style="color: var(--terminal-green);">▸</span> Passwordless authentication using biometrics</li>
+      <li style="margin: 10px 0;"><span style="color: var(--terminal-green);">▸</span> More secure than traditional passwords</li>
+      <li style="margin: 10px 0;"><span style="color: var(--terminal-green);">▸</span> Works with fingerprint, face recognition, or security keys</li>
+      <li style="margin: 10px 0;"><span style="color: var(--terminal-green);">▸</span> Device-bound credentials (private key never leaves your device)</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+function bufferDecode(value) {
+  return Uint8Array.from(
+    atob(value.replace(/-/g, '+').replace(/_/g, '/')),
+    c => c.charCodeAt(0)
+  );
+}
+function bufferEncode(value) {
+  return btoa(String.fromCharCode.apply(null, new Uint8Array(value)))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/g, "");
+}
+
+document.getElementById("register").addEventListener("click", async () => {
+  const status = document.getElementById("status");
+  status.textContent = "> Fetching registration options...";
+
+  const optionsRes = await fetch("{{ url_for('auth.webauthn_register_begin') }}", {
+    method: "POST"
+  });
+  if (!optionsRes.ok) {
+    status.textContent = "[ERROR] " + (await optionsRes.text());
+    return;
+  }
+
+  let options = await optionsRes.json();
+  // challenge und user.id zurück nach ArrayBuffer
+  options.challenge = bufferDecode(options.challenge);
+  options.user.id = bufferDecode(options.user.id);
+
+  if (options.excludeCredentials) {
+    options.excludeCredentials = options.excludeCredentials.map(cred => ({
+      ...cred,
+      id: bufferDecode(cred.id),
+    }));
+  }
+
+  status.textContent = "> Waiting for authenticator...";
+  let cred;
+  try {
+    cred = await navigator.credentials.create({ publicKey: options });
+  } catch (e) {
+    status.textContent = "[ERROR] Registration cancelled: " + e;
+    return;
+  }
+
+  status.textContent = "> Verifying registration...";
+  const registrationResponse = {
+    id: cred.id,
+    rawId: bufferEncode(cred.rawId),
+    type: cred.type,
+    response: {
+      attestationObject: bufferEncode(cred.response.attestationObject),
+      clientDataJSON: bufferEncode(cred.response.clientDataJSON),
+    }
+  };
+
+  const verifyRes = await fetch("{{ url_for('auth.webauthn_register_complete') }}", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(registrationResponse)
+  });
+
+  if (verifyRes.ok) {
+    status.textContent = "[SUCCESS] Passkey registered successfully!\n\nReloading page...";
+    setTimeout(() => window.location.reload(), 1500);
+  } else {
+    status.textContent = "[ERROR] Registration failed: " + (await verifyRes.text());
+  }
+});
+</script>
+{% endblock %}

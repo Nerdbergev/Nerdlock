@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+
+{% block title %}Door Control{% endblock %}
+
+{% block content %}
+<div class="terminal-box" style="margin-bottom: 15px; padding: 15px;">
+  <h1 style="margin: 0; font-size: 20px;">Door Control</h1>
+</div>
+
+<div class="terminal-box" style="margin-bottom: 15px; padding: 15px;">
+  <h3 style="margin: 0 0 12px 0; font-size: 16px;">Alle Türen</h3>
+  <div style="display: flex; gap: 12px; flex-wrap: wrap;">
+    {% set all_unlocked = door_statuses.values()|selectattr('status', 'equalto', 'unlocked')|list|length == door_statuses|length %}
+    {% set all_locked = door_statuses.values()|selectattr('status', 'equalto', 'locked')|list|length == door_statuses|length %}
+
+    <button class="bulk-action-btn {% if all_unlocked %}filled{% else %}outline{% endif %}"
+            data-action="unlock"
+            {% if all_unlocked %}disabled{% endif %}
+            style="border-color: var(--terminal-green); color: {% if all_unlocked %}var(--bg-primary){% else %}var(--terminal-green){% endif %}; {% if all_unlocked %}background: var(--terminal-green);{% endif %}">
+      🔓 Alles Aufschließen
+    </button>
+    <button class="bulk-action-btn {% if all_locked %}filled{% else %}outline{% endif %} danger"
+            data-action="lock"
+            {% if all_locked %}disabled{% endif %}
+            style="border-color: var(--terminal-red); color: {% if all_locked %}var(--bg-primary){% else %}var(--terminal-red){% endif %}; {% if all_locked %}background: var(--terminal-red);{% endif %}">
+      🔒 Alles Abschließen
+    </button>
+  </div>
+</div>
+
+<!-- Door Control Cards (Minimalist) -->
+<div class="door-grid">
+
+  {% for location, door_data in door_statuses.items() %}
+  <div class="terminal-box door-card" style="padding: 20px; border-width: 2px; border-color: {% if door_data.status == 'locked' %}var(--terminal-red){% elif door_data.status == 'unlocked' %}var(--terminal-yellow){% else %}var(--terminal-green){% endif %};">
+    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+      <h2 style="margin: 0; font-size: 18px;">{{ door_data.info.name }}</h2>
+    </div>
+
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div style="position: relative;">
+        <button class="door-action-btn {% if door_data.status == 'unlocked' %}filled{% else %}outline{% endif %}"
+                data-door="{{ location }}"
+                data-action="unlock"
+                {% if door_data.status == 'unlocked' %}disabled{% endif %}>
+          🔓 Aufschließen
+        </button>
+
+        {% set user_roles = current_user.roles|map(attribute='name')|list %}
+        {% if ('admin' in user_roles or 'door_admin' in user_roles) and door_data.status == 'unlocked' %}
+        <button class="unlatch-toggle"
+                data-door="{{ location }}"
+                style="position: absolute; right: 5px; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: var(--terminal-green); font-size: 18px; padding: 5px 10px; cursor: pointer;">
+          ▼
+        </button>
+        <div class="unlatch-menu"
+             data-door="{{ location }}"
+             style="display: none; position: absolute; right: 0; top: 100%; margin-top: 5px; background: var(--bg-secondary); border: 2px solid var(--terminal-green); border-radius: 4px; padding: 10px; z-index: 100; min-width: 200px; box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);">
+          <button class="door-action-btn secondary-action"
+                  data-door="{{ location }}"
+                  data-action="unlatch"
+                  style="width: 100%; font-size: 14px; padding: 12px; margin: 0;">
+            Falle ziehen
+          </button>
+        </div>
+        {% endif %}
+      </div>
+
+      <button class="door-action-btn {% if door_data.status == 'locked' %}filled{% else %}outline{% endif %} danger"
+              data-door="{{ location }}"
+              data-action="lock"
+              {% if door_data.status == 'locked' %}disabled{% endif %}>
+        🔒 Abschließen
+      </button>
+    </div>
+  </div>
+  {% endfor %}
+
+</div>
+
+<div style="margin-top: 20px;">
+  <a href="{{ url_for('main.index') }}" style="color: var(--terminal-cyan);">← Back to Home</a>
+</div>
+
+{% endblock %}
+
+{% block extra_js %}
+<script src="{{ url_for('static', filename='js/doors.js') }}"></script>
+<script>
+  document.body.dataset.performActionUrl = "{{ url_for('doors.perform_action') }}";
+</script>
+{% endblock %}

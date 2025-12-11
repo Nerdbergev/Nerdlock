@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="de">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>
+      {% block title %}Nerdlock{% endblock %} - Hackspace Access Control
+    </title>
+    <link
+      rel="stylesheet"
+      href="{{ url_for('static', filename='css/nerdlock.css') }}"
+    />
+    {% block extra_css %}{% endblock %}
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div
+          style="
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+          "
+        >
+          <div class="header-title">NERDLOCK</div>
+          {% if current_user.is_authenticated %}
+          <button id="menu-toggle" class="menu-toggle" aria-label="Toggle menu">
+            ☰
+          </button>
+          {% endif %}
+        </div>
+        <div class="header-subtitle">
+          // Hackspace Access Control System v1.0
+        </div>
+      </header>
+
+      {% if current_user.is_authenticated %}
+      <nav id="main-nav" class="nav-collapsed">
+        <a href="{{ url_for('doors.index') }}">Door Control</a>
+        {% if current_user.has_role('admin') or
+        current_user.has_role('vorstand') %}
+        <a href="{{ url_for('doors.logs') }}">Access Logs</a>
+        {% endif %}
+        <a href="{{ url_for('profile.index') }}">Profile</a>
+        <a href="{{ url_for('auth.webauthn_manage') }}">Passkeys</a>
+        {% if current_user.has_role('admin') %}
+        <a href="{{ url_for('admin.admin_index') }}">Admin Panel</a>
+        {% endif %}
+        <a href="{{ url_for('security.logout') }}">Logout</a>
+      </nav>
+      {% endif %}
+
+      <!-- Flash Messages -->
+      {% with messages = get_flashed_messages(with_categories=true) %} {% if
+      messages %}
+      <div class="flash-messages">
+        {% for category, message in messages %}
+        <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      </div>
+      {% endif %} {% endwith %}
+
+      <!-- Main Content -->
+      <main>{% block content %}{% endblock %}</main>
+
+      <footer id="footer-status">
+        System Status: OPERATIONAL | Uptime: 99.9% | Security Level: HIGH
+      </footer>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/base.js') }}"></script>
+
+    {% block extra_js %}{% endblock %}
+  </body>
+</html>

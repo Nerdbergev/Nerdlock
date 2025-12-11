@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+
+{% block title %}Door Access Logs{% endblock %}
+
+{% block content %}
+<div class="terminal-box">
+  <h1>Door Access Logs</h1>
+  <p style="color: var(--text-dim);">// Audit trail of all door access attempts</p>
+</div>
+
+<div class="terminal-box">
+  <h3>Filters</h3>
+  <form method="get" style="display: flex; gap: 15px; flex-wrap: wrap; align-items: flex-end;">
+    <div style="display: flex; flex-direction: column;">
+      <label>Door:</label>
+      <select name="door" style="width: 200px; height: 40px; margin-bottom: 0;">
+        <option value="">All Doors</option>
+        <option value="building" {% if door_filter == 'building' %}selected{% endif %}>Gebäudeeingang</option>
+        <option value="hackspace" {% if door_filter == 'hackspace' %}selected{% endif %}>Hackspace</option>
+      </select>
+    </div>
+
+    <div style="display: flex; flex-direction: column;">
+      <label>Action:</label>
+      <select name="action" style="width: 150px; height: 40px; margin-bottom: 0;">
+        <option value="">All</option>
+        <option value="unlock" {% if action_filter == 'unlock' %}selected{% endif %}>Unlock</option>
+        <option value="lock" {% if action_filter == 'lock' %}selected{% endif %}>Lock</option>
+        <option value="unlatch" {% if action_filter == 'unlatch' %}selected{% endif %}>Unlatch</option>
+      </select>
+    </div>
+
+    <button type="submit" style="height: 40px; margin-bottom: 0;">Apply Filters</button>
+    <a href="{{ url_for('doors.logs') }}" class="btn" style="text-decoration: none; display: inline-flex; align-items: center; height: 40px; margin-bottom: 0;">Reset</a>
+  </form>
+</div>
+
+<div class="terminal-box">
+  {% if logs %}
+    <table>
+      <thead>
+        <tr>
+          <th>Timestamp</th>
+          <th>User</th>
+          <th>Door</th>
+          <th>Action</th>
+          <th>Roles</th>
+          <th>Result</th>
+          <th>IP</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for log in logs %}
+        <tr>
+          <td data-label="Timestamp"><code style="white-space: nowrap;">{{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</code></td>
+          <td data-label="User">{{ log.user_email }}</td>
+          <td data-label="Door">{{ log.door_name }}</td>
+          <td data-label="Action"><span class="role-tag">{{ log.action.upper() }}</span></td>
+          <td data-label="Roles">
+            {% for role in log.user_roles.split(',') if role %}
+              <span class="role-tag" style="font-size: 10px;">{{ role }}</span>
+            {% endfor %}
+          </td>
+          <td data-label="Result">
+            {% if log.success %}
+              <span style="color: var(--terminal-green);">✓</span> {{ log.message }}
+            {% else %}
+              <span style="color: var(--terminal-red);">✗</span> {{ log.message }}
+            {% endif %}
+          </td>
+          <td data-label="IP"><code style="font-size: 11px;">{{ log.ip_address or '-' }}</code></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+
+    <!-- Pagination -->
+    {% if pagination.pages > 1 %}
+    <div style="margin-top: 20px; display: flex; gap: 10px; justify-content: center; flex-wrap: wrap;">
+      {% if pagination.has_prev %}
+        <a href="{{ url_for('doors.logs', page=pagination.prev_num, door=door_filter, action=action_filter) }}"
+           class="btn" style="text-decoration: none;">← Previous</a>
+      {% endif %}
+
+      <span style="color: var(--text-dim); padding: 10px;">
+        Page {{ pagination.page }} of {{ pagination.pages }}
+      </span>
+
+      {% if pagination.has_next %}
+        <a href="{{ url_for('doors.logs', page=pagination.next_num, door=door_filter, action=action_filter) }}"
+           class="btn" style="text-decoration: none;">Next →</a>
+      {% endif %}
+    </div>
+    {% endif %}
+
+  {% else %}
+    <p style="color: var(--text-dim); text-align: center; padding: 40px;">
+      No logs found with current filters
+    </p>
+  {% endif %}
+</div>
+
+<div style="margin-top: 20px;">
+  <a href="{{ url_for('doors.index') }}" style="color: var(--terminal-cyan);">← Back to Door Control</a>
+</div>
+{% endblock %}
