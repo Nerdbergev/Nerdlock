@@ -5,6 +5,7 @@ extensions, blueprints, and Nuki integration.
 """
 
 import logging
+import sys
 
 from flask import Flask
 from flask_migrate import Migrate
@@ -21,6 +22,21 @@ from .profile import profile_bp
 migrate = Migrate()
 
 logger = logging.getLogger(__name__)
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)],
+)
+
+# Reduce noise from external libraries
+logging.getLogger("bleak").setLevel(logging.WARNING)
+logging.getLogger("passlib").setLevel(logging.WARNING)
+logging.getLogger("asyncio").setLevel(logging.WARNING)
+logging.getLogger("pyNukiBT").setLevel(logging.CRITICAL)
+logging.getLogger("app.nuki_control").setLevel(logging.INFO)
+logging.getLogger("app.nuki_updater").setLevel(logging.INFO)
 
 
 def create_app(config_class: type[Config] = Config) -> Flask:

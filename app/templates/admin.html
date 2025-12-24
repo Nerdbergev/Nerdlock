@@ -53,7 +53,7 @@
 <div class="terminal-box">
   <h2>User Management</h2>
 
-  <form method="post" action="{{ url_for('admin.update_user_roles') }}">
+  <form method="post" action="{{ url_for('admin.update_user_roles') }}" id="roles-form">
     <table>
       <thead>
         <tr>
@@ -87,6 +87,7 @@
                            value="{{ role.name }}"
                            {% if role in u.roles %}checked{% endif %}
                            {% if role.name == 'admin' and u.id == current_user.id %}disabled{% endif %}
+                           form="roles-form"
                     >
                     <span class="role-tag {% if role.name == 'admin' %}admin{% endif %}">{{ role.name }}</span>
                   </label>
@@ -97,12 +98,11 @@
             </td>
             <td>
               {% if u.id != current_user.id %}
-                <form method="post"
-                      action="{{ url_for('admin.delete_user', user_id=u.id) }}"
-                      onsubmit="return confirm('Delete user {{ u.email }}?');"
-                      style="display: inline;">
-                  <button type="submit" class="danger">Delete</button>
-                </form>
+                <button type="button"
+                        class="danger"
+                        onclick="if(confirm('Delete user {{ u.email }}?')) { document.getElementById('delete-form-{{ u.id }}').submit(); }">
+                  Delete
+                </button>
               {% else %}
                 <em style="color: var(--text-dim);">Current user</em>
               {% endif %}
@@ -118,6 +118,17 @@
       </div>
     {% endif %}
   </form>
+
+  <!-- Delete forms (separate from role update form to avoid nesting) -->
+  {% for u in users %}
+    {% if u.id != current_user.id %}
+      <form method="post"
+            action="{{ url_for('admin.delete_user', user_id=u.id) }}"
+            id="delete-form-{{ u.id }}"
+            style="display: none;">
+      </form>
+    {% endif %}
+  {% endfor %}
 </div>
 
 <div class="terminal-box">

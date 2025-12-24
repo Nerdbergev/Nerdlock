@@ -124,6 +124,12 @@ class UserService:
             if admins_left == 0:
                 return False, "Letzten Admin kannst du nicht löschen"
 
+        # Delete related records first to avoid foreign key constraint errors
+        from app.models import DoorAccessLog, WebAuthnCredential
+
+        WebAuthnCredential.query.filter_by(user_id=user_id).delete()
+        DoorAccessLog.query.filter_by(user_id=user_id).delete()
+
         db.session.delete(user)
         db.session.commit()
         return True, "User gelöscht"

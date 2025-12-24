@@ -3,6 +3,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
+import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -13,58 +16,126 @@ from nacl.public import PrivateKey
 
 logger = logging.getLogger(__name__)
 
+# Make pyNukiBT quiet (it logs disconnect EOFErrors at ERROR level)
+logging.getLogger("pyNukiBT").setLevel(logging.CRITICAL)
+logging.getLogger("pyNukiBT.nuki").setLevel(logging.CRITICAL)
+
+
+@dataclass(frozen=True)
+class _BleCacheEntry:
+    device: object  # bleak.backends.device.BLEDevice
+    ts: float
+
+
+class _BleWorker:
+    """Single dedicated BLE event-loop thread (one DBus connection, one loop)."""
+
+    def __init__(self) -> None:
+        self._thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._ready = threading.Event()
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        self._thread = threading.Thread(target=self._run, name="nuki-ble-worker", daemon=True)
+        self._thread.start()
+        self._ready.wait(timeout=10)
+
+    def _run(self) -> None:
+        self._loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self._loop)
+        self._ready.set()
+        try:
+            self._loop.run_forever()
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop=self._loop)  # type: ignore[arg-type]
+                for t in pending:
+                    t.cancel()
+                if pending:
+                    self._loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            self._loop.close()
+
+    async def run(self, coro):
+        """Run coroutine on worker loop; safe to call from any thread/loop."""
+        if self._loop is None:
+            raise RuntimeError("BLE worker not started")
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+
+        if running is self._loop:
+            return await coro
+
+        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
+        return await asyncio.wrap_future(fut)
+
 
 class NukiDevice:
-    """Interface for controlling Nuki Smart Locks via Bluetooth.
+    """
+    Same public API as before, plus:
+      - async warmup(macs, app_id, name) -> None
 
-    Handles pairing, action execution, and status monitoring for Nuki devices.
-    Pairing data is persisted to JSON files for reuse.
+    Key changes:
+      - Per-MAC session reuse (keep connection open for idle_ttl seconds)
+      - Per-MAC lock enforced in BLE worker loop
+      - BLEDevice cache to reduce scanning
+      - Disconnect is best-effort and EOFError ignored
     """
 
     def __init__(self, config_dir: Path):
         self.config_dir = config_dir
         self.pairing_dir = config_dir / "nuki_pairings"
         self.pairing_dir.mkdir(parents=True, exist_ok=True)
+
+        # Public state storage (read by sync getters)
         self.devices: dict[str, dict] = {}
-        self._lock = asyncio.Lock()
+        self._state_lock = threading.Lock()
+
+        # BLE worker
+        self._worker = _BleWorker()
+        self._worker.start()
+
+        # BLE-loop-only fields
+        self._mac_locks: dict[str, asyncio.Lock] = {}
+        self._ble_cache: dict[str, _BleCacheEntry] = {}
+        self._sessions: dict[str, tuple[pyNukiBT.NukiDevice, float, int, str]] = {}
+        #                          mac -> (device, last_used_ts, app_id, name)
+
+        self._gc_task_started = False
+
+        # Tuning (adjust to taste)
+        self._ble_cache_ttl_s = 600.0  # scan result cache (10 min)
+        self._scan_timeout_s = 3.0  # short scan; we try to avoid scanning most times
+        self._idle_ttl_s = 60.0  # keep BLE connection warm for 60s of inactivity
+        self._post_action_settle_s = 0.4  # wait after lock/unlock before reading state
+
+    # ---------- pairing persistence ----------
 
     def _get_pairing_file(self, mac_address: str) -> Path:
-        """Get path to pairing data file for a device.
-
-        Args:
-            mac_address: Bluetooth MAC address
-
-        Returns:
-            Path to JSON file containing pairing data
-        """
         safe_mac = mac_address.replace(":", "_")
         return self.pairing_dir / f"nuki_{safe_mac}.json"
 
     def load_pairing(
         self, mac_address: str
     ) -> tuple[bytes | None, bytes | None, bytes | None, bytes | None]:
-        """Load pairing data for a Nuki device.
-
-        Args:
-            mac_address: Bluetooth MAC address
-
-        Returns:
-            Tuple of (auth_id, nuki_public_key, bridge_public_key, bridge_private_key)
-            or (None, None, None, None) if not paired
-        """
         pairing_file = self._get_pairing_file(mac_address)
         if pairing_file.exists():
             try:
                 with open(pairing_file, "r") as f:
                     data = json.load(f)
-                    return (
-                        bytes.fromhex(data["auth_id"]),
-                        bytes.fromhex(data["nuki_public_key"]),
-                        bytes.fromhex(data["bridge_public_key"]),
-                        bytes.fromhex(data["bridge_private_key"]),
-                    )
+                return (
+                    bytes.fromhex(data["auth_id"]),
+                    bytes.fromhex(data["nuki_public_key"]),
+                    bytes.fromhex(data["bridge_public_key"]),
+                    bytes.fromhex(data["bridge_private_key"]),
+                )
             except Exception as e:
-                logger.error(f"Failed to load pairing data for {mac_address}: {e}")
+                logger.error("Failed to load pairing data for %s: %s", mac_address, e)
         return None, None, None, None
 
     def save_pairing(
@@ -74,16 +145,7 @@ class NukiDevice:
         nuki_public_key: bytes,
         bridge_public_key: bytes,
         bridge_private_key: bytes,
-    ):
-        """Save pairing data to persistent storage.
-
-        Args:
-            mac_address: Bluetooth MAC address
-            auth_id: Authentication ID from pairing
-            nuki_public_key: Nuki's public key
-            bridge_public_key: Bridge's public key
-            bridge_private_key: Bridge's private key
-        """
+    ) -> None:
         pairing_file = self._get_pairing_file(mac_address)
         data = {
             "mac_address": mac_address,
@@ -94,95 +156,56 @@ class NukiDevice:
         }
         with open(pairing_file, "w") as f:
             json.dump(data, f, indent=2)
-        logger.info(f"Pairing data saved to {pairing_file}")
+        logger.info("Pairing data saved to %s", pairing_file)
 
     def is_paired(self, mac_address: str) -> bool:
-        """Check if device is already paired.
-
-        Args:
-            mac_address: Bluetooth MAC address
-
-        Returns:
-            True if pairing data exists
-        """
         auth_id, _, _, _ = self.load_pairing(mac_address)
         return auth_id is not None
 
-    async def pair(self, mac_address: str, pin: int, app_id: int, name: str) -> bool:
-        """Pair with a Nuki device.
+    # ---------- internal helpers (BLE loop only) ----------
 
-        Args:
-            mac_address: Bluetooth MAC address of Nuki
-            pin: 6-digit PIN from Nuki device
-            app_id: Unique app identifier
-            name: Name for this bridge connection
+    def _ensure_gc_started__ble(self) -> None:
+        if self._gc_task_started:
+            return
+        self._gc_task_started = True
+        asyncio.create_task(self._session_gc__ble())
 
-        Returns:
-            True if pairing successful
-        """
-        keypair = PrivateKey.generate()
-        bridge_public_key = bytes(keypair.public_key)
-        bridge_private_key = bytes(keypair)
+    def _get_mac_lock__ble(self, mac: str) -> asyncio.Lock:
+        lock = self._mac_locks.get(mac)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._mac_locks[mac] = lock
+        return lock
 
-        n = pyNukiBT.NukiDevice(
-            mac_address,
-            None,
-            None,
-            bridge_public_key,
-            bridge_private_key,
-            app_id,
-            name,
-        )
+    async def _find_ble_device__ble(self, mac: str):
+        now = time.time()
+        entry = self._ble_cache.get(mac)
+        if entry and (now - entry.ts) < self._ble_cache_ttl_s:
+            return entry.device
 
-        device = await BleakScanner.find_device_by_address(mac_address, timeout=10.0)
-        if not device:
-            logger.error(f"Device {mac_address} not found")
-            return False
+        dev = await BleakScanner.find_device_by_address(mac, timeout=self._scan_timeout_s)
+        if dev:
+            self._ble_cache[mac] = _BleCacheEntry(device=dev, ts=now)
+        return dev
 
-        n.set_ble_device(device)
-        await n.connect()
-        logger.info(f"Connected to Nuki at {mac_address}")
-
+    async def _disconnect_best_effort__ble(self, n: pyNukiBT.NukiDevice) -> None:
         try:
-            await n.pair(pin)
-            self.save_pairing(
-                mac_address,
-                n._auth_id,
-                n._nuki_public_key,
-                n._bridge_public_key,
-                n._bridge_private_key,
-            )
             await n.disconnect()
-            logger.info("Pairing successful")
-            return True
-        except pyNukiBT.NukiErrorException as e:
-            logger.error(f"Pairing failed: {e}")
-            await n.disconnect()
-            return False
+        except EOFError:
+            # dbus_fast sometimes throws EOF if the bus drops during disconnect
+            return
+        except Exception:
+            return
 
-    async def _get_device(self, mac_address: str, app_id: int, name: str) -> pyNukiBT.NukiDevice:
-        """Get connected Nuki device instance.
-
-        Args:
-            mac_address: Bluetooth MAC address
-            app_id: App identifier
-            name: Bridge name
-
-        Returns:
-            Connected NukiDevice instance
-
-        Raises:
-            ValueError: If not paired with device
-            ConnectionError: If device not found
-        """
-        auth_id, nuki_public_key, bridge_public_key, bridge_private_key = self.load_pairing(
-            mac_address
-        )
+    async def _connect_new_session__ble(
+        self, mac: str, app_id: int, name: str
+    ) -> pyNukiBT.NukiDevice:
+        auth_id, nuki_public_key, bridge_public_key, bridge_private_key = self.load_pairing(mac)
         if not auth_id:
-            raise ValueError(f"Not paired with {mac_address} - run pairing first")
+            raise ValueError(f"Not paired with {mac} - run pairing first")
 
         n = pyNukiBT.NukiDevice(
-            mac_address,
+            mac,
             auth_id,
             nuki_public_key,
             bridge_public_key,
@@ -191,160 +214,283 @@ class NukiDevice:
             name,
         )
 
-        device = await BleakScanner.find_device_by_address(mac_address, timeout=10.0)
-        if not device:
-            raise ConnectionError(f"Device {mac_address} not found")
+        dev = await self._find_ble_device__ble(mac)
+        if not dev:
+            raise ConnectionError(f"Device {mac} not found")
 
-        n.set_ble_device(device)
+        n.set_ble_device(dev)
         await n.connect()
         return n
+
+    async def _get_session__ble(self, mac: str, app_id: int, name: str) -> pyNukiBT.NukiDevice:
+        """Reuse a warm session if possible; otherwise connect and store."""
+        self._ensure_gc_started__ble()
+
+        sess = self._sessions.get(mac)
+        if sess:
+            n, _, sess_app_id, sess_name = sess
+            # If app_id/name changed, rebuild session
+            if sess_app_id == app_id and sess_name == name:
+                self._sessions[mac] = (n, time.time(), sess_app_id, sess_name)
+                return n
+            # else drop old session
+            await self._disconnect_best_effort__ble(n)
+            self._sessions.pop(mac, None)
+
+        n = await self._connect_new_session__ble(mac, app_id, name)
+        self._sessions[mac] = (n, time.time(), app_id, name)
+        return n
+
+    async def _drop_session__ble(self, mac: str) -> None:
+        sess = self._sessions.pop(mac, None)
+        if not sess:
+            return
+        n, _, _, _ = sess
+        await self._disconnect_best_effort__ble(n)
+
+    async def _session_gc__ble(self) -> None:
+        """Disconnect idle sessions."""
+        while True:
+            now = time.time()
+            for mac, (n, last_used, _app_id, _name) in list(self._sessions.items()):
+                if now - last_used > self._idle_ttl_s:
+                    self._sessions.pop(mac, None)
+                    await self._disconnect_best_effort__ble(n)
+            await asyncio.sleep(2.0)
+
+    @staticmethod
+    def _parse_battery(last_state: dict) -> tuple[bool, Optional[int]]:
+        # Critical flag
+        crit = last_state.get("critical_battery_state", False)
+        if isinstance(crit, bool):
+            battery_critical = crit
+        elif isinstance(crit, int):
+            battery_critical = crit > 0
+        else:
+            battery_critical = False
+
+        # Percentage (best-effort; depends on device/pyNukiBT version)
+        pct = None
+        for k in ("battery_percentage", "batteryLevel", "battery_level", "battery"):
+            v = last_state.get(k)
+            if isinstance(v, int):
+                pct = max(0, min(v, 100))
+                break
+
+        return battery_critical, pct
+
+    def _store_state(self, mac: str, last_state: dict) -> None:
+        with self._state_lock:
+            self.devices.setdefault(mac, {})
+            self.devices[mac]["last_state"] = last_state
+
+    def _store_battery(self, mac: str, critical: bool, percentage: Optional[int]) -> None:
+        with self._state_lock:
+            self.devices.setdefault(mac, {})
+            self.devices[mac]["battery"] = {
+                "critical": bool(critical),
+                "percentage": percentage,
+                "timestamp": datetime.utcnow().isoformat(),
+            }
+
+    # ---------- new public method (optional) ----------
+
+    async def warmup(self, mac_addresses: list[str], app_id: int, name: str) -> None:
+        """Connect to devices and fetch state so actions are fast afterwards."""
+
+        async def _do__ble() -> None:
+            for mac in mac_addresses:
+                lock = self._get_mac_lock__ble(mac)
+                async with lock:
+                    try:
+                        n = await self._get_session__ble(mac, app_id, name)
+                        await n.update_state()
+                        last_state = n.last_state or {}
+                        self._store_state(mac, last_state)
+                        crit, pct = self._parse_battery(last_state)
+                        self._store_battery(mac, crit, pct)
+                    except Exception as e:
+                        logger.debug("Warmup failed for %s: %s", mac, e)
+                        await self._drop_session__ble(mac)
+
+        return await self._worker.run(_do__ble())
+
+    # ---------- public async API (same signatures) ----------
+
+    async def pair(self, mac_address: str, pin: int, app_id: int, name: str) -> bool:
+        async def _do_pair__ble() -> bool:
+            lock = self._get_mac_lock__ble(mac_address)
+            async with lock:
+                keypair = PrivateKey.generate()
+                bridge_public_key = bytes(keypair.public_key)
+                bridge_private_key = bytes(keypair)
+
+                n = pyNukiBT.NukiDevice(
+                    mac_address,
+                    None,
+                    None,
+                    bridge_public_key,
+                    bridge_private_key,
+                    app_id,
+                    name,
+                )
+
+                dev = await self._find_ble_device__ble(mac_address)
+                if not dev:
+                    logger.error("Device %s not found", mac_address)
+                    return False
+
+                n.set_ble_device(dev)
+                await n.connect()
+                try:
+                    await n.pair(pin)
+                    self.save_pairing(
+                        mac_address,
+                        n._auth_id,
+                        n._nuki_public_key,
+                        n._bridge_public_key,
+                        n._bridge_private_key,
+                    )
+                    return True
+                except pyNukiBT.NukiErrorException as e:
+                    logger.error("Pairing failed: %s", e)
+                    return False
+                finally:
+                    await self._disconnect_best_effort__ble(n)
+
+        return await self._worker.run(_do_pair__ble())
 
     async def execute_action(
         self, mac_address: str, app_id: int, name: str, action: str
     ) -> tuple[bool, str]:
-        """Execute action on Nuki device.
+        async def _do_action__ble() -> tuple[bool, str]:
+            lock = self._get_mac_lock__ble(mac_address)
+            async with lock:
+                try:
+                    n = await self._get_session__ble(mac_address, app_id, name)
 
-        Args:
-            mac_address: Bluetooth MAC address
-            app_id: App identifier
-            name: Bridge name
-            action: Action to perform (lock, unlock, unlatch)
+                    # For speed: don't do update_state() before the command.
+                    if action == "lock":
+                        await n.lock()
+                        message = "Verriegelt"
+                    elif action == "unlock":
+                        await n.unlock()
+                        message = "Entriegelt"
+                    elif action == "unlatch":
+                        await n.unlatch()
+                        message = "Tür geöffnet"
+                    else:
+                        return False, f"Unknown action: {action}"
 
-        Returns:
-            Tuple of (success: bool, message: str)
-        """
-        async with self._lock:
-            try:
-                n = await self._get_device(mac_address, app_id, name)
+                    # Best-effort refresh after action (fast + keeps UI consistent)
+                    await asyncio.sleep(self._post_action_settle_s)
+                    try:
+                        await n.update_state()
+                        last_state = n.last_state or {}
+                        self._store_state(mac_address, last_state)
+                        crit, pct = self._parse_battery(last_state)
+                        self._store_battery(mac_address, crit, pct)
+                    except Exception as e:
+                        # If state refresh fails, drop session (next call reconnects)
+                        logger.debug("Post-action state refresh failed for %s: %s", mac_address, e)
+                        await self._drop_session__ble(mac_address)
 
-                if action == "lock":
-                    await n.lock()
-                    message = "Verriegelt"
-                elif action == "unlock":
-                    await n.unlock()
-                    message = "Entriegelt"
-                elif action == "unlatch":
-                    await n.unlatch()
-                    message = "Tür geöffnet"
-                else:
-                    await n.disconnect()
-                    return False, f"Unknown action: {action}"
+                    return True, message
 
-                await asyncio.sleep(1)
-                await n.update_state()
-                self.last_state = n.last_state or {}
-                await n.disconnect()
+                except Exception as e:
+                    logger.error(
+                        "Failed to execute action %s for %s: %s",
+                        action,
+                        mac_address,
+                        e,
+                        exc_info=True,
+                    )
+                    await self._drop_session__ble(mac_address)
+                    return False, str(e)
 
-                logger.info(f"Action {action} executed successfully")
-                return True, message
-
-            except Exception as e:
-                logger.error(f"Failed to execute action {action}: {e}")
-                return False, str(e)
+        return await self._worker.run(_do_action__ble())
 
     async def update_status(self, mac_address: str, app_id: int, name: str) -> dict:
-        """Update and retrieve current status of Nuki device.
+        async def _do_status__ble() -> dict:
+            lock = self._get_mac_lock__ble(mac_address)
+            async with lock:
+                try:
+                    n = await self._get_session__ble(mac_address, app_id, name)
 
-        Args:
-            mac_address: Bluetooth MAC address
-            app_id: App identifier
-            name: Bridge name
+                    # Retry once on decrypt-ish issues; if it persists drop session.
+                    last_state: dict = {}
+                    for attempt in range(2):
+                        try:
+                            await n.update_state()
+                            last_state = n.last_state or {}
+                            break
+                        except Exception as e:
+                            if attempt == 0:
+                                logger.debug(
+                                    "State update failed for %s (%s), retrying once", mac_address, e
+                                )
+                                await self._drop_session__ble(mac_address)
+                                n = await self._get_session__ble(mac_address, app_id, name)
+                                continue
+                            raise
 
-        Returns:
-            Dictionary with device state including battery info
-        """
-        async with self._lock:
-            try:
-                n = await self._get_device(mac_address, app_id, name)
-                await n.update_state()
-                last_state = n.last_state or {}
+                    self._store_state(mac_address, last_state)
+                    crit, pct = self._parse_battery(last_state)
+                    self._store_battery(mac_address, crit, pct)
+                    return last_state
 
-                battery_critical = last_state.get("critical_battery_state", False)
+                except Exception as e:
+                    logger.error(
+                        "Failed to update status for %s: %s", mac_address, e, exc_info=True
+                    )
+                    await self._drop_session__ble(mac_address)
+                    return {}
 
-                if mac_address not in self.devices:
-                    self.devices[mac_address] = {}
+        return await self._worker.run(_do_status__ble())
 
-                self.devices[mac_address]["last_state"] = last_state
-                self.devices[mac_address]["battery"] = {
-                    "critical": battery_critical,
-                    "timestamp": datetime.utcnow().isoformat(),
-                }
-
-                await n.disconnect()
-                logger.debug(f"Status updated for {mac_address}: {last_state}")
-                return last_state
-
-            except Exception as e:
-                logger.error(f"Failed to update status for {mac_address}: {e}")
-                return {}
+    # ---------- public sync getters ----------
 
     def get_lock_state(self, mac_address: str) -> str:
-        """Get current lock state of device.
-
-        Args:
-            mac_address: Bluetooth MAC address
-
-        Returns:
-            Lock state string (LOCKED, UNLOCKED, or UNKNOWN)
-        """
-        device_data = self.devices.get(mac_address, {})
-        last_state = device_data.get("last_state", {})
+        with self._state_lock:
+            last_state = (self.devices.get(mac_address, {}) or {}).get("last_state", {}) or {}
 
         if not last_state:
             return "UNKNOWN"
 
         lock_state = last_state.get("lock_state", "unknown")
+        lock_state_str = lock_state.name if hasattr(lock_state, "name") else str(lock_state)
+
         state_map = {
             "locked": "LOCKED",
             "unlocked": "UNLOCKED",
             "unlatched": "UNLOCKED",
             "unlocking": "UNLOCKED",
             "locking": "LOCKED",
+            "uncalibrated": "UNCALIBRATED",
+            "motor_blocked": "ERROR",
         }
-        return state_map.get(str(lock_state).lower(), "UNKNOWN")
+        return state_map.get(lock_state_str.lower(), "UNKNOWN")
 
     def get_battery_state(self, mac_address: str) -> dict:
-        """Get battery state of device.
-
-        Args:
-            mac_address: Bluetooth MAC address
-
-        Returns:
-            Dictionary with critical flag and timestamp
-        """
-        device_data = self.devices.get(mac_address, {})
-        battery = device_data.get("battery")
-
+        with self._state_lock:
+            battery = (self.devices.get(mac_address, {}) or {}).get("battery")
         if not battery:
-            return {"critical": False, "timestamp": None}
+            return {"critical": False, "percentage": None, "timestamp": None}
         return battery
 
     def get_all_batteries(self) -> dict[str, dict]:
-        """Get battery states for all known devices.
+        with self._state_lock:
+            return {
+                mac: data["battery"] for mac, data in self.devices.items() if data.get("battery")
+            }
 
-        Returns:
-            Dictionary mapping MAC addresses to battery info
-        """
-        result = {}
-        for mac, data in self.devices.items():
-            battery = data.get("battery")
-            if battery:
-                result[mac] = battery
-        return result
 
+# ---- singleton factory (same external access) ----
 
 nuki_instance: Optional[NukiDevice] = None
 
 
 def get_nuki_device(config_dir: Path) -> NukiDevice:
-    """Get or create singleton NukiDevice instance.
-
-    Args:
-        config_dir: Directory for storing pairing data
-
-    Returns:
-        Shared NukiDevice instance
-    """
     global nuki_instance
     if nuki_instance is None:
         nuki_instance = NukiDevice(config_dir)

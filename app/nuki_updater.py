@@ -111,16 +111,31 @@ class NukiStatusUpdater:
                     break
 
                 try:
+                    logger.debug(
+                        f"[UPDATER DEBUG] Starting update for {door_info['name']} "
+                        f"({door_info['mac']})"
+                    )
                     await nuki.update_status(door_info["mac"], app_id, name)
                     lock_state = nuki.get_lock_state(door_info["mac"])
                     battery = nuki.get_battery_state(door_info["mac"])
 
+                    if battery and battery.get("percentage") is not None:
+                        battery_info = f"{battery['percentage']}%"
+                        if battery.get("critical"):
+                            battery_info += " (CRITICAL!)"
+                    else:
+                        battery_info = "N/A"
+
                     logger.info(
                         f"Nuki {door_info['name']} ({door_info['mac']}): {lock_state}, "
-                        f"Battery critical: {battery['critical']}"
+                        f"Battery: {battery_info}"
                     )
                 except Exception as e:
                     logger.error(f"Failed to update Nuki {door_info['name']}: {e}")
+                    logger.error(
+                        f"[UPDATER DEBUG] Exception type: {type(e).__name__}, details: {e}",
+                        exc_info=True,
+                    )
 
             for _ in range(interval):
                 if not self.running:

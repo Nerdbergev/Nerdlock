@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger(__name__)
 
 
 class DoorAction(Enum):
@@ -121,6 +124,40 @@ class DoorControlMock:
         Returns:
             Current DoorStatus
         """
+        door_info = DOORS.get(door)
+
+        # If using Nuki, get real status
+        if door_info and door_info.use_nuki and door_info.nuki_mac:
+            try:
+                from app.nuki_control import nuki_instance
+
+                if nuki_instance is None:
+                    logger.warning(f"Door {door.value}: nuki_instance not initialized yet")
+                    return self._status[door]
+
+                nuki_state = nuki_instance.get_lock_state(door_info.nuki_mac)
+                logger.info(f"Door {door.value}: Nuki state = {nuki_state}, will map to DoorStatus")
+
+                # Map Nuki state to DoorStatus
+                if nuki_state == "LOCKED":
+                    logger.info(f"Door {door.value}: Returning LOCKED")
+                    return DoorStatus.LOCKED
+                elif nuki_state in ("UNLOCKED", "UNLATCHED"):
+                    logger.info(f"Door {door.value}: Returning UNLOCKED")
+                    return DoorStatus.UNLOCKED
+                elif nuki_state == "UNCALIBRATED":
+                    logger.warning(f"Door {door.value} is UNCALIBRATED")
+                    return DoorStatus.ERROR
+                else:
+                    logger.warning(f"Unknown Nuki state: {nuki_state}, using cached status")
+                    return self._status[door]
+            except Exception as e:
+                logger.warning(
+                    f"Failed to get Nuki status for {door.value}: {e}, using cached status"
+                )
+                # Fall back to cached status
+
+        logger.info(f"Door {door.value}: Using cached status = {self._status[door]}")
         return self._status[door]
 
     def execute_action(self, door: DoorLocation, action: DoorAction) -> tuple[bool, str]:
@@ -272,15 +309,66 @@ def execute_door_action(
 
                 if success:
                     new_state = nuki.get_lock_state(mac_address)
+
                     if new_state == "LOCKED":
                         door_controller._status[door] = DoorStatus.LOCKED
                     elif new_state == "UNLOCKED":
                         door_controller._status[door] = DoorStatus.UNLOCKED
+                    elif new_state == "UNCALIBRATED":
+                        logger.warning(f"Lock {mac_address} is UNCALIBRATED - needs calibration!")
+                        door_controller._status[door] = DoorStatus.UNLOCKED
+                    else:
+                        logger.warning(f"Unknown lock state: {new_state}")
 
                 return success, message
+            except Exception as e:
+                logger.error(f"Nuki action failed: {e}")
+                raise
             finally:
                 loop.close()
         except Exception as e:
             return False, f"Nuki-Fehler: {e}"
 
     return door_controller.execute_action(door, action)
+
+
+def warmup_nuki_devices() -> None:
+    """Warmup all configured Nuki devices in background.
+
+    Connects to all Nuki devices and fetches their state to make
+    subsequent actions faster. Runs asynchronously without blocking.
+    """
+    try:
+        from flask import current_app
+
+        from .nuki_control import get_nuki_device
+
+        # Collect all configured Nuki MAC addresses
+        mac_addresses = []
+        for location, info in DOORS.items():
+            if info.use_nuki and info.nuki_mac:
+                mac_addresses.append(info.nuki_mac)
+
+        if not mac_addresses:
+            logger.debug("No Nuki devices configured, skipping warmup")
+            return
+
+        config_dir = Path(current_app.instance_path)
+        nuki = get_nuki_device(config_dir)
+
+        app_id = current_app.config["NUKI_APP_ID"]
+        name = current_app.config["NUKI_NAME"]
+
+        logger.info(f"Starting Nuki warmup for {len(mac_addresses)} device(s)")
+
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(nuki.warmup(mac_addresses, app_id, name))
+            logger.info("Nuki warmup completed successfully")
+        except Exception as e:
+            logger.debug(f"Nuki warmup failed: {e}")
+        finally:
+            loop.close()
+    except Exception as e:
+        logger.debug(f"Could not warmup Nuki devices: {e}")

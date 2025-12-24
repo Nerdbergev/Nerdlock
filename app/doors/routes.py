@@ -1,3 +1,5 @@
+import threading
+
 from flask import flash, jsonify, redirect, render_template, request, url_for
 from flask_security import auth_required, current_user
 
@@ -6,6 +8,7 @@ from app.door_control import (
     DoorLocation,
     door_controller,
     get_all_doors,
+    warmup_nuki_devices,
 )
 from app.models import DoorAccessLog
 
@@ -38,6 +41,10 @@ def index():
         .limit(10)
         .all()
     )
+
+    # Start Nuki warmup in background thread
+    warmup_thread = threading.Thread(target=warmup_nuki_devices, daemon=True)
+    warmup_thread.start()
 
     return render_template("doors/index.html", door_statuses=door_statuses, recent_logs=recent_logs)
 

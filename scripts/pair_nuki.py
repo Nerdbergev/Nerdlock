@@ -19,27 +19,27 @@ async def scan_for_nuki():
     print("Suche nach Nuki-Geräten...")
     print("=" * 60)
 
-    devices = await BleakScanner.discover(timeout=10.0)
-    nuki_devices = [d for d in devices if d.name and "Nuki" in d.name]
+    devices = await BleakScanner.discover(timeout=10.0, return_adv=True)
+    nuki_devices = [(d, adv) for d, adv in devices.values() if d.name and "Nuki" in d.name]
 
     if not nuki_devices:
         print("Keine Nuki-Geräte gefunden.")
         return None
 
     print("Gefundene Nuki-Geräte:\n")
-    for i, device in enumerate(nuki_devices, 1):
+    for i, (device, adv) in enumerate(nuki_devices, 1):
         print(f"{i}. {device.name}")
         print(f"   MAC: {device.address}")
-        print(f"   RSSI: {device.rssi} dBm")
+        print(f"   RSSI: {adv.rssi} dBm")
         print()
 
     if len(nuki_devices) == 1:
-        return nuki_devices[0].address
+        return nuki_devices[0][0].address
 
     while True:
         choice = input(f"Wähle Gerät (1-{len(nuki_devices)}): ").strip()
         if choice.isdigit() and 1 <= int(choice) <= len(nuki_devices):
-            return nuki_devices[int(choice) - 1].address
+            return nuki_devices[int(choice) - 1][0].address
         print("Ungültige Eingabe.")
 
 
