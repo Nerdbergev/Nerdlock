@@ -39,6 +39,6 @@ webencodings==0.5.1
 Werkzeug==3.1.4
 WTForms==3.2.1
 pyNukiBT==0.0.19
-bleak>=0.20.0,<2.0.0
+bleak>=0.20.0,<3.0.0
 dbus-fast>=2.21.0,<4.0.0
 PyNaCl==1.6.1
