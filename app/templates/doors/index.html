@@ -32,7 +32,7 @@
 <div class="door-grid">
 
   {% for location, door_data in door_statuses.items() %}
-  <div class="terminal-box door-card" style="padding: 20px; border-width: 2px; border-color: {% if door_data.status == 'locked' %}var(--terminal-red){% elif door_data.status == 'unlocked' %}var(--terminal-yellow){% else %}var(--terminal-green){% endif %};">
+  <div class="terminal-box door-card" style="padding: 20px; border-width: 2px; border-color: {% if door_data.status == 'locked' %}var(--terminal-red){% elif door_data.status == 'unlocked' %}var(--terminal-green){% else %}var(--terminal-yellow){% endif %};">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
       <h2 style="margin: 0; font-size: 18px;">{{ door_data.info.name }}</h2>
       {% if door_data.battery %}
