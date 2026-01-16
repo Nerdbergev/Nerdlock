@@ -12,6 +12,7 @@ from typing import Optional
 
 import pyNukiBT
 from bleak import BleakScanner
+from bleak.exc import BleakError
 from nacl.public import PrivateKey
 
 logger = logging.getLogger(__name__)
@@ -197,6 +198,16 @@ class NukiDevice:
         except Exception:
             return
 
+    def _is_device_not_found(self, e: Exception) -> bool:
+        return isinstance(e, BleakError) and "not found" in str(e)
+
+    async def _force_rescan__ble(self, mac: str):
+        self._ble_cache.pop(mac, None)
+        dev = await BleakScanner.find_device_by_address(mac, timeout=10.0)
+        if dev:
+            self._ble_cache[mac] = _BleCacheEntry(device=dev, ts=time.time())
+        return dev
+
     async def _connect_new_session__ble(
         self, mac: str, app_id: int, name: str
     ) -> pyNukiBT.NukiDevice:
@@ -204,23 +215,45 @@ class NukiDevice:
         if not auth_id:
             raise ValueError(f"Not paired with {mac} - run pairing first")
 
-        n = pyNukiBT.NukiDevice(
-            mac,
-            auth_id,
-            nuki_public_key,
-            bridge_public_key,
-            bridge_private_key,
-            app_id,
-            name,
-        )
+        async def _make_and_connect(dev):
+            n = pyNukiBT.NukiDevice(
+                mac,
+                auth_id,
+                nuki_public_key,
+                bridge_public_key,
+                bridge_private_key,
+                app_id,
+                name,
+            )
+            n.set_ble_device(dev)
+            await n.connect()
+            return n
 
+        # 1) First try: cached device (fast path)
         dev = await self._find_ble_device__ble(mac)
         if not dev:
             raise ConnectionError(f"Device {mac} not found")
 
-        n.set_ble_device(dev)
-        await n.connect()
-        return n
+        try:
+            return await _make_and_connect(dev)
+        except BleakError as e:
+            msg = str(e)
+            if "not found" not in msg:
+                raise
+
+            # 2) Stale device path: drop cache and do a real scan, then retry
+            logger.debug(
+                "Bleak device-path stale for %s, rescanning and retrying connect: %s", mac, e
+            )
+            self._ble_cache.pop(mac, None)
+
+            dev2 = await BleakScanner.find_device_by_address(mac, timeout=10.0)
+            if not dev2:
+                raise ConnectionError(f"Device {mac} not found (after rescan)")
+
+            # refresh cache too
+            self._ble_cache[mac] = _BleCacheEntry(device=dev2, ts=time.time())
+            return await _make_and_connect(dev2)
 
     async def _get_session__ble(self, mac: str, app_id: int, name: str) -> pyNukiBT.NukiDevice:
         """Reuse a warm session if possible; otherwise connect and store."""
@@ -366,47 +399,59 @@ class NukiDevice:
         async def _do_action__ble() -> tuple[bool, str]:
             lock = self._get_mac_lock__ble(mac_address)
             async with lock:
-                try:
-                    n = await self._get_session__ble(mac_address, app_id, name)
-
-                    # For speed: don't do update_state() before the command.
-                    if action == "lock":
-                        await n.lock()
-                        message = "Verriegelt"
-                    elif action == "unlock":
-                        await n.unlock()
-                        message = "Entriegelt"
-                    elif action == "unlatch":
-                        await n.unlatch()
-                        message = "Tür geöffnet"
-                    else:
-                        return False, f"Unknown action: {action}"
-
-                    # Best-effort refresh after action (fast + keeps UI consistent)
-                    await asyncio.sleep(self._post_action_settle_s)
+                for attempt in (1, 2):
                     try:
+                        n = await self._get_session__ble(mac_address, app_id, name)
+                        if getattr(n, "last_state", None) is None:
+                            try:
+                                await n.update_state()
+                            except Exception:
+                                # fallback: prevent pyNukiBT from crashing on assignment
+                                n.last_state = {}
+                        if action == "lock":
+                            await n.lock()
+                            message = "Verriegelt"
+                        elif action == "unlock":
+                            await n.unlock()
+                            message = "Entriegelt"
+                        elif action == "unlatch":
+                            await n.unlatch()
+                            message = "Tür geöffnet"
+                        else:
+                            return False, f"Unknown action: {action}"
+
+                        await asyncio.sleep(self._post_action_settle_s)
+
+                        # optional refresh
                         await n.update_state()
                         last_state = n.last_state or {}
                         self._store_state(mac_address, last_state)
                         crit, pct = self._parse_battery(last_state)
                         self._store_battery(mac_address, crit, pct)
+
+                        return True, message
+
                     except Exception as e:
-                        # If state refresh fails, drop session (next call reconnects)
-                        logger.debug("Post-action state refresh failed for %s: %s", mac_address, e)
+                        if attempt == 1 and self._is_device_not_found(e):
+                            logger.info(
+                                "BLE device-path lost for %s, "
+                                "forcing rescan + reconnect and retrying action",
+                                mac_address,
+                            )
+                            await self._drop_session__ble(mac_address)
+                            await self._force_rescan__ble(mac_address)
+                            # loop continues to attempt 2
+                            continue
+
+                        logger.error(
+                            "Failed to execute action %s for %s: %s",
+                            action,
+                            mac_address,
+                            e,
+                            exc_info=True,
+                        )
                         await self._drop_session__ble(mac_address)
-
-                    return True, message
-
-                except Exception as e:
-                    logger.error(
-                        "Failed to execute action %s for %s: %s",
-                        action,
-                        mac_address,
-                        e,
-                        exc_info=True,
-                    )
-                    await self._drop_session__ble(mac_address)
-                    return False, str(e)
+                        return False, str(e)
 
         return await self._worker.run(_do_action__ble())
 
