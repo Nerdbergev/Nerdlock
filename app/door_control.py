@@ -67,18 +67,18 @@ DOORS = {
         location=DoorLocation.BUILDING,
         name="Gebäudeeingang",
         description="Haupteingang des Gebäudes",
-        unlock_roles=["admin"],
-        lock_roles=["admin"],
-        unlatch_roles=["admin"],
+        unlock_roles=[],
+        lock_roles=[],
+        unlatch_roles=[],
         use_nuki=False,
     ),
     DoorLocation.HACKSPACE: DoorInfo(
         location=DoorLocation.HACKSPACE,
         name="Hackspace-Eingang",
         description="Eingang zum Hackspace",
-        unlock_roles=["admin"],
-        lock_roles=["admin"],
-        unlatch_roles=["admin"],
+        unlock_roles=[],
+        lock_roles=[],
+        unlatch_roles=[],
         use_nuki=False,
     ),
 }
@@ -256,7 +256,9 @@ def check_permission(
         return False, "Unbekannte Aktion"
 
     user_role_names = [role.name if hasattr(role, "name") else str(role) for role in user_roles]
-    has_permission = any(role in required_roles for role in user_role_names)
+    has_permission = (
+        any(role in required_roles for role in user_role_names) or len(required_roles) == 0
+    )
 
     if not has_permission:
         return False, f"Fehlende Berechtigung. Benötigt: {', '.join(required_roles)}"

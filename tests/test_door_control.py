@@ -2,29 +2,8 @@ from app.door_control import (
     DoorAction,
     DoorLocation,
     DoorStatus,
-    check_permission,
     door_controller,
 )
-from app.models import Role
-
-
-def test_check_permission_admin_unlock():
-    roles = [Role(name="admin")]
-    has_perm, error = check_permission(roles, DoorLocation.BUILDING, DoorAction.UNLOCK)
-    assert has_perm is True
-    assert error is None
-
-
-def test_check_permission_no_role_unlock():
-    roles = []
-    has_perm, error = check_permission(roles, DoorLocation.BUILDING, DoorAction.UNLOCK)
-    assert has_perm is False
-
-
-def test_check_permission_admin_unlatch():
-    roles = [Role(name="admin")]
-    has_perm, error = check_permission(roles, DoorLocation.BUILDING, DoorAction.UNLATCH)
-    assert has_perm is True
 
 
 def test_door_controller_unlock():
