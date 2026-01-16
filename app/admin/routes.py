@@ -24,41 +24,47 @@ def admin_index():
     Returns:
         Rendered admin.html template
     """
+    from datetime import datetime
+    from pathlib import Path
+
+    from flask import current_app
+
+    from app.door_control import DOORS
+
     users = User.query.order_by(User.id).all()
     all_roles = Role.query.order_by(Role.name).all()
 
     nuki_batteries = []
     try:
-        from pathlib import Path
-
-        from flask import current_app
-
-        from app.door_control import DOORS
         from app.nuki_control import get_nuki_device
 
         config_dir = Path(current_app.instance_path)
         nuki = get_nuki_device(config_dir)
 
-        for door_info in DOORS.values():
+        for location, door_info in DOORS.items():
             if door_info.use_nuki and door_info.nuki_mac:
+                current_app.logger.debug(
+                    f"Getting battery for {door_info.name} ({door_info.nuki_mac})"
+                )
                 battery_state = nuki.get_battery_state(door_info.nuki_mac)
 
                 if battery_state.get("timestamp"):
-                    from datetime import datetime
-
                     ts = datetime.fromisoformat(battery_state["timestamp"])
                     battery_state["timestamp"] = ts.strftime("%d.%m.%Y %H:%M:%S")
 
-                nuki_batteries.append(
-                    {
-                        "name": door_info.name,
-                        "mac": door_info.nuki_mac,
-                        "battery": battery_state,
-                        "unlatch_allowed": door_info.nuki_allow_unlatch,
-                    }
-                )
-    except Exception:
-        pass
+                nuki_entry = {
+                    "location": location.value,
+                    "name": door_info.name,
+                    "mac": door_info.nuki_mac,
+                    "battery": battery_state,
+                    "unlatch_allowed": door_info.nuki_allow_unlatch,
+                }
+                nuki_batteries.append(nuki_entry)
+                current_app.logger.debug(f"Added Nuki entry: {nuki_entry}")
+
+        current_app.logger.info(f"Admin page showing {len(nuki_batteries)} Nuki device(s)")
+    except Exception as e:
+        current_app.logger.error(f"Failed to get Nuki battery info: {e}", exc_info=True)
 
     return render_template(
         "admin.html", users=users, all_roles=all_roles, nuki_batteries=nuki_batteries

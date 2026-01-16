@@ -67,18 +67,18 @@ DOORS = {
         location=DoorLocation.BUILDING,
         name="Gebäudeeingang",
         description="Haupteingang des Gebäudes",
-        unlock_roles=[],
-        lock_roles=[],
-        unlatch_roles=[],
+        unlock_roles=["admin"],
+        lock_roles=["admin"],
+        unlatch_roles=["admin"],
         use_nuki=False,
     ),
     DoorLocation.HACKSPACE: DoorInfo(
         location=DoorLocation.HACKSPACE,
         name="Hackspace-Eingang",
         description="Eingang zum Hackspace",
-        unlock_roles=[],
-        lock_roles=[],
-        unlatch_roles=[],
+        unlock_roles=["admin"],
+        lock_roles=["admin"],
+        unlatch_roles=["admin"],
         use_nuki=False,
     ),
 }
@@ -368,6 +368,21 @@ def warmup_nuki_devices() -> None:
         try:
             loop.run_until_complete(nuki.warmup(mac_addresses, app_id, name))
             logger.info("Nuki warmup completed successfully")
+
+            # Update door_controller status after warmup
+            for location, info in DOORS.items():
+                if info.use_nuki and info.nuki_mac:
+                    nuki_state = nuki.get_lock_state(info.nuki_mac)
+                    if nuki_state == "LOCKED":
+                        door_controller._status[location] = DoorStatus.LOCKED
+                    elif nuki_state in ("UNLOCKED", "UNLATCHED"):
+                        door_controller._status[location] = DoorStatus.UNLOCKED
+                    elif nuki_state == "UNCALIBRATED":
+                        door_controller._status[location] = DoorStatus.ERROR
+                    logger.info(
+                        f"Door {location.value} status updated"
+                        f" to {door_controller._status[location].value}"
+                    )
         except Exception as e:
             logger.debug(f"Nuki warmup failed: {e}")
         finally:

@@ -27,7 +27,11 @@
         <td><strong>{{ nuki.name }}</strong></td>
         <td><code style="font-size: 11px;">{{ nuki.mac }}</code></td>
         <td>
-          {% if nuki.battery.critical %}
+          {% if nuki.battery.percentage is not none %}
+            <span style="{% if nuki.battery.critical %}color: var(--terminal-red);{% else %}color: var(--terminal-green);{% endif %}">
+              {% if nuki.battery.critical %}⚠️{% else %}✓{% endif %} {{ nuki.battery.percentage }}%
+            </span>
+          {% elif nuki.battery.critical %}
             <span style="color: var(--terminal-red);">⚠️ CRITICAL</span>
           {% else %}
             <span style="color: var(--terminal-green);">✓ OK</span>

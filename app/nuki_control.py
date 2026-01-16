@@ -293,22 +293,30 @@ class NukiDevice:
 
     @staticmethod
     def _parse_battery(last_state: dict) -> tuple[bool, Optional[int]]:
-        # Critical flag
-        crit = last_state.get("critical_battery_state", False)
+        # Critical flag (NOTE: Nuki reports False when battery is critical!)
+        crit = last_state.get("critical_battery_state", True)
         if isinstance(crit, bool):
-            battery_critical = crit
+            battery_critical = not crit  # Invert: False = critical, True = OK
         elif isinstance(crit, int):
-            battery_critical = crit > 0
+            battery_critical = crit == 0  # Invert: 0 = critical, >0 = OK
         else:
             battery_critical = False
 
         # Percentage (best-effort; depends on device/pyNukiBT version)
+        # Note: Many Nuki devices don't provide battery percentage, only critical state
         pct = None
         for k in ("battery_percentage", "batteryLevel", "battery_level", "battery"):
             v = last_state.get(k)
             if isinstance(v, int):
                 pct = max(0, min(v, 100))
+                logger.debug(f"Found battery percentage in key '{k}': {pct}%")
                 break
+
+        if pct is None:
+            logger.debug(
+                f"No battery percentage available,"
+                f" critical_battery_state={crit} (inverted to critical={battery_critical})"
+            )
 
         return battery_critical, pct
 
@@ -325,6 +333,7 @@ class NukiDevice:
                 "percentage": percentage,
                 "timestamp": datetime.utcnow().isoformat(),
             }
+        logger.debug(f"Stored battery for {mac}: critical={critical}, percentage={percentage}")
 
     # ---------- new public method (optional) ----------
 

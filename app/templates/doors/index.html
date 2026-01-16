@@ -35,6 +35,11 @@
   <div class="terminal-box door-card" style="padding: 20px; border-width: 2px; border-color: {% if door_data.status == 'locked' %}var(--terminal-red){% elif door_data.status == 'unlocked' %}var(--terminal-yellow){% else %}var(--terminal-green){% endif %};">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
       <h2 style="margin: 0; font-size: 18px;">{{ door_data.info.name }}</h2>
+      {% if door_data.battery %}
+      <span style="font-size: 14px; {% if door_data.battery.critical %}color: var(--terminal-red);{% else %}color: var(--terminal-green);{% endif %}">
+        🔋 {% if door_data.battery.percentage is not none %}{{ door_data.battery.percentage }}%{% elif door_data.battery.critical %}CRITICAL{% else %}OK{% endif %}
+      </span>
+      {% endif %}
     </div>
 
     <div style="display: flex; flex-direction: column; gap: 10px;">

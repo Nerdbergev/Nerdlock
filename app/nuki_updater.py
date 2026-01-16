@@ -123,8 +123,10 @@ class NukiStatusUpdater:
                         battery_info = f"{battery['percentage']}%"
                         if battery.get("critical"):
                             battery_info += " (CRITICAL!)"
+                    elif battery and battery.get("critical"):
+                        battery_info = "CRITICAL"
                     else:
-                        battery_info = "N/A"
+                        battery_info = "OK"
 
                     logger.info(
                         f"Nuki {door_info['name']} ({door_info['mac']}): {lock_state}, "

@@ -26,14 +26,35 @@ def index():
     Returns:
         Rendered doors/index.html template
     """
+    from pathlib import Path
+
+    from flask import current_app
+
+    from app.nuki_control import get_nuki_device
+
     doors = get_all_doors()
 
     door_statuses = {}
     for location, info in doors.items():
-        door_statuses[location.value] = {
+        status_dict = {
             "info": info,
             "status": door_controller.get_status(location).value,
         }
+
+        # Add battery info if Nuki is enabled
+        if info.use_nuki and info.nuki_mac:
+            try:
+                config_dir = Path(current_app.instance_path)
+                nuki = get_nuki_device(config_dir)
+                battery = nuki.get_battery_state(info.nuki_mac)
+                status_dict["battery"] = battery
+            except Exception as e:
+                current_app.logger.debug(f"Could not get battery for {location.value}: {e}")
+                status_dict["battery"] = {"critical": False, "percentage": None, "timestamp": None}
+        else:
+            status_dict["battery"] = {"critical": False, "percentage": None, "timestamp": None}
+
+        door_statuses[location.value] = status_dict
 
     recent_logs = (
         DoorAccessLog.query.filter_by(user_id=current_user.id)
