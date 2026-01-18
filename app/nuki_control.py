@@ -12,7 +12,7 @@ from typing import Optional
 
 import pyNukiBT
 from bleak import BleakScanner
-from bleak.exc import BleakError
+from bleak.exc import BleakDBusError, BleakError
 from nacl.public import PrivateKey
 
 logger = logging.getLogger(__name__)
@@ -115,6 +115,8 @@ class NukiDevice:
         self._idle_ttl_s = 60.0  # keep BLE connection warm for 60s of inactivity
         self._post_action_settle_s = 0.4  # wait after lock/unlock before reading state
 
+        self._scan_lock: asyncio.Lock | None = None
+
     # ---------- pairing persistence ----------
 
     def _get_pairing_file(self, mac_address: str) -> Path:
@@ -171,6 +173,11 @@ class NukiDevice:
         self._gc_task_started = True
         asyncio.create_task(self._session_gc__ble())
 
+    def _get_scan_lock__ble(self) -> asyncio.Lock:
+        if self._scan_lock is None:
+            self._scan_lock = asyncio.Lock()
+        return self._scan_lock
+
     def _get_mac_lock__ble(self, mac: str) -> asyncio.Lock:
         lock = self._mac_locks.get(mac)
         if lock is None:
@@ -184,10 +191,38 @@ class NukiDevice:
         if entry and (now - entry.ts) < self._ble_cache_ttl_s:
             return entry.device
 
-        dev = await BleakScanner.find_device_by_address(mac, timeout=self._scan_timeout_s)
-        if dev:
-            self._ble_cache[mac] = _BleCacheEntry(device=dev, ts=now)
-        return dev
+        scan_lock = self._get_scan_lock__ble()
+
+        async with scan_lock:
+            # Cache might have been filled while we waited
+            now = time.time()
+            entry = self._ble_cache.get(mac)
+            if entry and (now - entry.ts) < self._ble_cache_ttl_s:
+                return entry.device
+
+            last_exc: Exception | None = None
+            for attempt in range(4):
+                try:
+                    dev = await BleakScanner.find_device_by_address(
+                        mac, timeout=self._scan_timeout_s
+                    )
+                    if dev:
+                        self._ble_cache[mac] = _BleCacheEntry(device=dev, ts=time.time())
+                    return dev
+                except BleakDBusError as e:
+                    # BlueZ: another discovery/scan is already in progress
+                    if "org.bluez.Error.InProgress" in str(e):
+                        last_exc = e
+                        await asyncio.sleep(0.25 * (attempt + 1))
+                        continue
+                    raise
+                except Exception as e:
+                    last_exc = e
+                    break
+
+            if last_exc:
+                logger.debug("Scan for %s failed after retries: %s", mac, last_exc)
+            return None
 
     async def _disconnect_best_effort__ble(self, n: pyNukiBT.NukiDevice) -> None:
         try:
@@ -203,10 +238,29 @@ class NukiDevice:
 
     async def _force_rescan__ble(self, mac: str):
         self._ble_cache.pop(mac, None)
-        dev = await BleakScanner.find_device_by_address(mac, timeout=10.0)
-        if dev:
-            self._ble_cache[mac] = _BleCacheEntry(device=dev, ts=time.time())
-        return dev
+        scan_lock = self._get_scan_lock__ble()
+
+        async with scan_lock:
+            last_exc: Exception | None = None
+            for attempt in range(4):
+                try:
+                    dev = await BleakScanner.find_device_by_address(mac, timeout=10.0)
+                    if dev:
+                        self._ble_cache[mac] = _BleCacheEntry(device=dev, ts=time.time())
+                    return dev
+                except BleakDBusError as e:
+                    if "org.bluez.Error.InProgress" in str(e):
+                        last_exc = e
+                        await asyncio.sleep(0.25 * (attempt + 1))
+                        continue
+                    raise
+                except Exception as e:
+                    last_exc = e
+                    break
+
+            if last_exc:
+                logger.debug("Force rescan for %s failed after retries: %s", mac, last_exc)
+            return None
 
     async def _connect_new_session__ble(
         self, mac: str, app_id: int, name: str
