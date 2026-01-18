@@ -132,6 +132,30 @@ class NukiStatusUpdater:
                         f"Nuki {door_info['name']} ({door_info['mac']}): {lock_state}, "
                         f"Battery: {battery_info}"
                     )
+
+                    # Notify Space API of status update
+                    try:
+                        from app.door_control import DoorLocation, DoorStatus
+                        from app.space_api import notify_door_status_change
+
+                        door_location = DoorLocation(door_info["location"])
+
+                        # Map Nuki state to DoorStatus
+                        if lock_state == "LOCKED":
+                            door_status = DoorStatus.LOCKED
+                        elif lock_state in ("UNLOCKED", "UNLATCHED"):
+                            door_status = DoorStatus.UNLOCKED
+                        elif lock_state == "UNCALIBRATED":
+                            door_status = DoorStatus.ERROR
+                        else:
+                            door_status = None
+
+                        if door_status:
+                            with self.app.app_context():
+                                notify_door_status_change(door_location, door_status)
+                    except Exception as e:
+                        logger.warning(f"Failed to notify Space API from updater: {e}")
+
                 except Exception as e:
                     logger.error(f"Failed to update Nuki {door_info['name']}: {e}")
                     logger.error(

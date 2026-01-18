@@ -58,6 +58,11 @@ class Config:
     NUKI_NAME = os.environ.get("NUKI_NAME", "Nerdlock")
     NUKI_CHECK_INTERVAL = int(os.environ.get("NUKI_CHECK_INTERVAL", "900"))
 
+    SPACE_API_URL = os.environ.get("SPACE_API_URL", "")
+    SPACE_API_TOKEN = os.environ.get("SPACE_API_TOKEN", "")
+    SPACE_API_ENABLED = bool(int(os.environ.get("SPACE_API_ENABLED", "0")))
+    SPACE_API_DOOR = os.environ.get("SPACE_API_DOOR", "building")
+
     def __init__(self):
         if not self.SECRET_KEY:
             print("Warning: SECRET_KEY is not set! Using default insecure key.")

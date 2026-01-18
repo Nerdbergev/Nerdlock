@@ -179,6 +179,15 @@ class DoorControlMock:
             if current_status == DoorStatus.UNLOCKED:
                 return False, "Tür ist bereits aufgeschlossen"
             self._status[door] = DoorStatus.UNLOCKED
+
+            # Notify Space API
+            try:
+                from app.space_api import notify_door_status_change
+
+                notify_door_status_change(door, DoorStatus.UNLOCKED)
+            except Exception as e:
+                logger.warning(f"Failed to notify Space API: {e}")
+
             return True, "Tür erfolgreich aufgeschlossen"
 
         elif action == DoorAction.LOCK:
@@ -187,6 +196,15 @@ class DoorControlMock:
             if current_status == DoorStatus.OPEN:
                 return False, "Tür ist noch offen, kann nicht abgeschlossen werden"
             self._status[door] = DoorStatus.LOCKED
+
+            # Notify Space API
+            try:
+                from app.space_api import notify_door_status_change
+
+                notify_door_status_change(door, DoorStatus.LOCKED)
+            except Exception as e:
+                logger.warning(f"Failed to notify Space API: {e}")
+
             return True, "Tür erfolgreich abgeschlossen"
 
         elif action == DoorAction.UNLATCH:
@@ -321,6 +339,14 @@ def execute_door_action(
                         door_controller._status[door] = DoorStatus.UNLOCKED
                     else:
                         logger.warning(f"Unknown lock state: {new_state}")
+
+                    # Notify Space API of status change
+                    try:
+                        from app.space_api import notify_door_status_change
+
+                        notify_door_status_change(door, door_controller._status[door])
+                    except Exception as e:
+                        logger.warning(f"Failed to notify Space API: {e}")
 
                 return success, message
             except Exception as e:
