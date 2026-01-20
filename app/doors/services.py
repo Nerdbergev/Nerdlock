@@ -35,6 +35,11 @@ class DoorService:
         """
         success, message = execute_door_action(user.roles, door, action)
 
+        if request.remote_addr == "127.0.0.1" and request.headers.get("X-Forwarded-For"):
+            ip_address = request.headers.get("X-Forwarded-For")
+        else:
+            ip_address = request.remote_addr
+
         door_info = get_door_info(door)
         DoorAccessLog.log_access(
             user=user,
@@ -43,7 +48,7 @@ class DoorService:
             action=action.value,
             success=success,
             message=message,
-            ip_address=request.remote_addr,
+            ip_address=ip_address,
         )
 
         status = door_controller.get_status(door).value
@@ -68,6 +73,11 @@ class DoorService:
         results = []
         overall_success = True
 
+        if request.remote_addr == "127.0.0.1" and request.headers.get("X-Forwarded-For"):
+            ip_address = request.headers.get("X-Forwarded-For")
+        else:
+            ip_address = request.remote_addr
+
         for door_location in DoorLocation:
             success, message = execute_door_action(user.roles, door_location, action)
 
@@ -79,7 +89,7 @@ class DoorService:
                 action=action.value,
                 success=success,
                 message=message,
-                ip_address=request.remote_addr,
+                ip_address=ip_address,
             )
 
             results.append({"door": door_info.name, "success": success, "message": message})
