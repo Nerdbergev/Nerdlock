@@ -53,7 +53,7 @@
         {% for log in logs %}
         <tr>
           <td data-label="Timestamp"><code style="white-space: nowrap;">{{ log.timestamp.strftime('%Y-%m-%d %H:%M:%S') }}</code></td>
-          <td data-label="User">{{ log.user_email }}</td>
+          <td data-label="User">{{ log.user.username }}</td>
           <td data-label="Door">{{ log.door_name }}</td>
           <td data-label="Action"><span class="role-tag">{{ log.action.upper() }}</span></td>
           <td data-label="Roles">

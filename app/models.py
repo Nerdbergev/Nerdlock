@@ -84,8 +84,6 @@ class DoorAccessLog(db.Model):
     timestamp = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, index=True)
 
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False, index=True)
-    user_email = db.Column(db.String(255), nullable=False)
-
     door_location = db.Column(db.String(50), nullable=False, index=True)
     door_name = db.Column(db.String(100), nullable=False)
 
@@ -101,9 +99,8 @@ class DoorAccessLog(db.Model):
 
     def __repr__(self) -> str:
         """Return string representation of log entry."""
-        return (
-            f"<DoorAccessLog {self.timestamp} {self.user_email} {self.action} {self.door_location}>"
-        )
+        return f"""<DoorAccessLog {self.timestamp} {self.user.username}
+            {self.action} {self.door_location}>"""
 
     @classmethod
     def log_access(
@@ -134,7 +131,6 @@ class DoorAccessLog(db.Model):
 
         log_entry = cls(
             user_id=user.id,
-            user_email=user.email,
             door_location=door_location,
             door_name=door_name,
             action=action,
