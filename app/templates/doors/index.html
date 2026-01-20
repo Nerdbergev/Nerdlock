@@ -52,7 +52,7 @@
         </button>
 
         {% set user_roles = current_user.roles|map(attribute='name')|list %}
-        {% if ('admin' in user_roles or 'door_admin' in user_roles) and door_data.status == 'unlocked' %}
+        {% if door_data.status == 'unlocked' and door_data.info['nuki_allow_unlatch'] %}
         <button class="unlatch-toggle"
                 data-door="{{ location }}"
                 style="position: absolute; right: 5px; top: 50%; transform: translateY(-50%); background: transparent; border: none; color: var(--terminal-green); font-size: 18px; padding: 5px 10px; cursor: pointer;">
