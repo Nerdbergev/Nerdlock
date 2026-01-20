@@ -133,7 +133,41 @@ def notify_door_status_change(door: DoorLocation, new_status: DoorStatus) -> Non
                 f"(configured door: {configured_door})"
             )
             return
-
+        onlinestatus = check_online_status()
+        if onlinestatus == new_status:
+            logger.debug(f"Door status unchanged for Space API ({new_status}), skipping update")
+            return
+        logger.debug(f"Notifying Space API of door status change: {onlinestatus} -> {new_status}")
         send_door_status_to_space_api(door, new_status)
     except Exception as e:
         logger.error(f"Failed to notify Space API: {e}")
+
+
+def check_online_status() -> DoorStatus:
+    """Check online status from Space API.
+
+    Returns:
+        DoorStatus based on Space API response
+    """
+    try:
+        api_url = current_app.config.get("SPACE_API_URL") + "doorstatus/"
+        if not api_url:
+            logger.warning("Space API URL not configured")
+            return DoorStatus.ERROR
+
+        response = requests.get(api_url, timeout=5)
+        response.raise_for_status()
+        # We get a json array and have to return first status field of array
+
+        json_data = response.json()
+        if isinstance(json_data["results"], list) and len(json_data["results"]) > 0:
+            status = json_data["results"][0].get("status", "unknown")
+            if status == "open":
+                return DoorStatus.UNLOCKED
+            elif status == "close":
+                return DoorStatus.LOCKED
+        return DoorStatus.ERROR
+
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Space API request error: {e}")
+        return DoorStatus.ERROR
