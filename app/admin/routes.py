@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 from flask import (
     abort,
     flash,
@@ -24,7 +27,6 @@ def admin_index():
     Returns:
         Rendered admin.html template
     """
-    from datetime import datetime
     from pathlib import Path
 
     from flask import current_app
@@ -49,8 +51,12 @@ def admin_index():
                 battery_state = nuki.get_battery_state(door_info.nuki_mac)
 
                 if battery_state.get("timestamp"):
-                    ts = datetime.fromisoformat(battery_state["timestamp"])
-                    battery_state["timestamp"] = ts.strftime("%d.%m.%Y %H:%M:%S")
+                    # Parse UTC timestamp and convert to Europe/Berlin timezone
+                    ts_utc = datetime.fromisoformat(battery_state["timestamp"])
+                    if ts_utc.tzinfo is None:
+                        ts_utc = ts_utc.replace(tzinfo=timezone.utc)
+                    ts_local = ts_utc.astimezone(ZoneInfo("Europe/Berlin"))
+                    battery_state["timestamp"] = ts_local.strftime("%d.%m.%Y %H:%M:%S")
 
                 nuki_entry = {
                     "location": location.value,
