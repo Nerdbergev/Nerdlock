@@ -51,12 +51,16 @@ def admin_index():
                 battery_state = nuki.get_battery_state(door_info.nuki_mac)
 
                 if battery_state.get("timestamp"):
-                    # Parse UTC timestamp and convert to Europe/Berlin timezone
-                    ts_utc = datetime.fromisoformat(battery_state["timestamp"])
-                    if ts_utc.tzinfo is None:
-                        ts_utc = ts_utc.replace(tzinfo=timezone.utc)
-                    ts_local = ts_utc.astimezone(ZoneInfo("Europe/Berlin"))
-                    battery_state["timestamp"] = ts_local.strftime("%d.%m.%Y %H:%M:%S")
+                    try:
+                        # Try parsing as ISO format (new format from UTC)
+                        ts_utc = datetime.fromisoformat(battery_state["timestamp"])
+                        if ts_utc.tzinfo is None:
+                            ts_utc = ts_utc.replace(tzinfo=timezone.utc)
+                        ts_local = ts_utc.astimezone(ZoneInfo("Europe/Berlin"))
+                        battery_state["timestamp"] = ts_local.strftime("%d.%m.%Y %H:%M:%S")
+                    except ValueError:
+                        # Already in German format (old data), keep as is
+                        pass
 
                 nuki_entry = {
                     "location": location.value,
