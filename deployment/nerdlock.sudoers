@@ -1,0 +1,17 @@
+# Nerdlock Bluetooth Reset Permission
+#
+# This file allows the web server user to run the bluetooth reset script
+# without requiring a password.
+#
+# Installation:
+#   sudo cp deployment/nerdlock.sudoers /etc/sudoers.d/nerdlock
+#   sudo chmod 0440 /etc/sudoers.d/nerdlock
+#
+# Replace 'www-data' with the actual user running gunicorn/nerdlock
+# You can find this with: ps aux | grep gunicorn
+
+# For www-data (default web server user)
+www-data ALL=(ALL) NOPASSWD: /opt/Nerdlock/scripts/reset_bluetooth.sh
+
+# Uncomment if you have a dedicated nerdlock service user:
+# nerdlock ALL=(ALL) NOPASSWD: /opt/Nerdlock/scripts/reset_bluetooth.sh
