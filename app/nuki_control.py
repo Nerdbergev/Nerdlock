@@ -355,6 +355,15 @@ class NukiDevice:
             if last_exc:
                 logger.warning("Scan for %s failed after retries: %s", mac, last_exc)
                 self._failed_scan_count += 1
+
+                # Trigger reset if scan failures accumulate
+                if self._failed_scan_count >= 10:
+                    logger.warning(
+                        "High scan failure count (%d), triggering automatic Bluetooth reset",
+                        self._failed_scan_count,
+                    )
+                    BluetoothResetManager.get_instance().record_failure()
+                    self._failed_scan_count = 0  # Reset counter after triggering
             return None
 
     async def _disconnect_best_effort__ble(self, n: pyNukiBT.NukiDevice) -> None:
@@ -410,6 +419,16 @@ class NukiDevice:
             if last_exc:
                 logger.error("Force rescan for %s failed after all retries: %s", mac, last_exc)
                 self._failed_scan_count += 1
+
+                # Trigger reset if scan failures accumulate
+                if self._failed_scan_count >= 10:
+                    logger.warning(
+                        "High scan failure count after force rescan (%d), "
+                        "triggering automatic Bluetooth reset",
+                        self._failed_scan_count,
+                    )
+                    BluetoothResetManager.get_instance().record_failure()
+                    self._failed_scan_count = 0  # Reset counter after triggering
             return None
 
     async def _connect_new_session__ble(
@@ -622,6 +641,19 @@ class NukiDevice:
         async def _do_action__ble() -> tuple[bool, str]:
             lock = self._get_mac_lock__ble(mac_address)
             async with lock:
+                # Check if we should trigger reset before attempting action
+                if self._failed_scan_count >= 10:
+                    logger.warning(
+                        "High scan failure count (%d) before action, triggering Bluetooth reset",
+                        self._failed_scan_count,
+                    )
+                    if self._bt_reset_manager.record_failure():
+                        self._failed_scan_count = 0
+                        return (
+                            False,
+                            "Bluetooth wird zurückgesetzt, bitte in 10 Sekunden erneut versuchen",
+                        )
+
                 for attempt in (1, 2):
                     try:
                         n = await self._get_session__ble(mac_address, app_id, name)
