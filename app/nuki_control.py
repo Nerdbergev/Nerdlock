@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -20,6 +21,122 @@ logger = logging.getLogger(__name__)
 # Make pyNukiBT quiet (it logs disconnect EOFErrors at ERROR level)
 logging.getLogger("pyNukiBT").setLevel(logging.CRITICAL)
 logging.getLogger("pyNukiBT.nuki").setLevel(logging.CRITICAL)
+
+
+class BluetoothResetManager:
+    """Manages automatic Bluetooth adapter resets on repeated connection failures.
+
+    Uses rate limiting to avoid too frequent resets.
+    """
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._last_reset_time = 0.0
+        self._min_reset_interval = 300.0  # 5 minutes minimum between resets
+        self._consecutive_failures = 0
+        self._failure_threshold = 3  # Reset after 3 consecutive failures
+        self._last_failure_time = 0.0
+        self._failure_timeout = 60.0  # Reset counter if no failures for 60s
+
+    def record_failure(self) -> bool:
+        """Record a connection failure and potentially trigger reset.
+
+        Returns:
+            True if reset was triggered, False otherwise
+        """
+        with self._lock:
+            now = time.time()
+
+            # Reset failure counter if too much time passed
+            if now - self._last_failure_time > self._failure_timeout:
+                self._consecutive_failures = 0
+
+            self._consecutive_failures += 1
+            self._last_failure_time = now
+
+            logger.warning(
+                f"BLE connection failure recorded"
+                f" ({self._consecutive_failures}/{self._failure_threshold})"
+            )
+
+            # Check if we should trigger reset
+            if self._consecutive_failures >= self._failure_threshold:
+                time_since_last_reset = now - self._last_reset_time
+
+                if time_since_last_reset >= self._min_reset_interval:
+                    logger.warning(
+                        f"Triggering automatic Bluetooth reset after {self._consecutive_failures} "
+                        f"consecutive failures (last reset was {time_since_last_reset:.0f}s ago)"
+                    )
+
+                    if self._perform_reset():
+                        self._last_reset_time = now
+                        self._consecutive_failures = 0
+                        return True
+                    else:
+                        logger.error("Automatic Bluetooth reset failed")
+                else:
+                    logger.info(
+                        f"Skipping Bluetooth reset - too soon after last reset "
+                        f"({time_since_last_reset:.0f}s < {self._min_reset_interval:.0f}s)"
+                    )
+
+            return False
+
+    def record_success(self):
+        """Record a successful connection - resets failure counter."""
+        with self._lock:
+            if self._consecutive_failures > 0:
+                logger.info(
+                    f"BLE connection successful, "
+                    f"resetting failure counter (was {self._consecutive_failures})"
+                )
+                self._consecutive_failures = 0
+
+    def _perform_reset(self) -> bool:
+        """Perform the actual Bluetooth reset.
+
+        Returns:
+            True if reset successful, False otherwise
+        """
+        try:
+            script_locations = [
+                Path("/opt/Nerdlock/scripts/reset_bluetooth.sh"),
+                Path(__file__).parent.parent / "scripts" / "reset_bluetooth.sh",
+            ]
+
+            script_path = None
+            for path in script_locations:
+                if path.exists():
+                    script_path = path
+                    break
+
+            if not script_path:
+                logger.error("Bluetooth reset script not found")
+                return False
+
+            logger.info(f"Executing Bluetooth reset: {script_path}")
+
+            result = subprocess.run(
+                ["sudo", str(script_path)],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            if result.returncode == 0:
+                logger.info(f"Bluetooth reset successful: {result.stdout.strip()}")
+                return True
+            else:
+                logger.error(f"Bluetooth reset failed (exit {result.returncode}): {result.stderr}")
+                return False
+
+        except subprocess.TimeoutExpired:
+            logger.error("Bluetooth reset timed out")
+            return False
+        except Exception as e:
+            logger.error(f"Bluetooth reset error: {e}", exc_info=True)
+            return False
 
 
 @dataclass(frozen=True)
@@ -101,6 +218,9 @@ class NukiDevice:
         self._worker = _BleWorker()
         self._worker.start()
 
+        # Bluetooth reset manager
+        self._bt_reset_manager = BluetoothResetManager()
+
         # BLE-loop-only fields
         self._mac_locks: dict[str, asyncio.Lock] = {}
         self._ble_cache: dict[str, _BleCacheEntry] = {}
@@ -116,6 +236,7 @@ class NukiDevice:
         self._post_action_settle_s = 0.4  # wait after lock/unlock before reading state
 
         self._scan_lock: asyncio.Lock | None = None
+        self._failed_scan_count = 0  # Track consecutive scan failures
 
     # ---------- pairing persistence ----------
 
@@ -200,14 +321,25 @@ class NukiDevice:
             if entry and (now - entry.ts) < self._ble_cache_ttl_s:
                 return entry.device
 
+            # Use longer timeout if we've had recent failures
+            scan_timeout = self._scan_timeout_s
+            if self._failed_scan_count > 0:
+                scan_timeout = min(15.0, self._scan_timeout_s * (1 + self._failed_scan_count))
+                logger.warning(
+                    "Using extended scan timeout %.1fs for %s after %d consecutive failures",
+                    scan_timeout,
+                    mac,
+                    self._failed_scan_count,
+                )
+
             last_exc: Exception | None = None
             for attempt in range(4):
                 try:
-                    dev = await BleakScanner.find_device_by_address(
-                        mac, timeout=self._scan_timeout_s
-                    )
+                    dev = await BleakScanner.find_device_by_address(mac, timeout=scan_timeout)
                     if dev:
                         self._ble_cache[mac] = _BleCacheEntry(device=dev, ts=time.time())
+                        self._failed_scan_count = 0  # Reset on success
+                        logger.debug("Successfully scanned and cached device %s", mac)
                     return dev
                 except BleakDBusError as e:
                     # BlueZ: another discovery/scan is already in progress
@@ -221,7 +353,8 @@ class NukiDevice:
                     break
 
             if last_exc:
-                logger.debug("Scan for %s failed after retries: %s", mac, last_exc)
+                logger.warning("Scan for %s failed after retries: %s", mac, last_exc)
+                self._failed_scan_count += 1
             return None
 
     async def _disconnect_best_effort__ble(self, n: pyNukiBT.NukiDevice) -> None:
@@ -237,29 +370,46 @@ class NukiDevice:
         return isinstance(e, BleakError) and "not found" in str(e)
 
     async def _force_rescan__ble(self, mac: str):
+        logger.info("Forcing rescan for device %s (clearing cache)", mac)
         self._ble_cache.pop(mac, None)
         scan_lock = self._get_scan_lock__ble()
 
         async with scan_lock:
             last_exc: Exception | None = None
-            for attempt in range(4):
+            # Try with progressively longer timeouts
+            timeouts = [10.0, 15.0, 20.0, 30.0]
+            for attempt, timeout in enumerate(timeouts):
                 try:
-                    dev = await BleakScanner.find_device_by_address(mac, timeout=10.0)
+                    logger.info(
+                        "Rescan attempt %d/%d for %s with timeout %.1fs",
+                        attempt + 1,
+                        len(timeouts),
+                        mac,
+                        timeout,
+                    )
+                    dev = await BleakScanner.find_device_by_address(mac, timeout=timeout)
                     if dev:
                         self._ble_cache[mac] = _BleCacheEntry(device=dev, ts=time.time())
-                    return dev
+                        self._failed_scan_count = 0  # Reset on success
+                        logger.info("Successfully rescanned device %s", mac)
+                        return dev
+                    else:
+                        logger.warning("Rescan attempt %d: Device %s not found", attempt + 1, mac)
                 except BleakDBusError as e:
                     if "org.bluez.Error.InProgress" in str(e):
                         last_exc = e
-                        await asyncio.sleep(0.25 * (attempt + 1))
+                        await asyncio.sleep(0.5 * (attempt + 1))
                         continue
                     raise
                 except Exception as e:
+                    logger.warning("Rescan attempt %d failed: %s", attempt + 1, e)
                     last_exc = e
-                    break
+                    await asyncio.sleep(1.0 * (attempt + 1))
+                    continue
 
             if last_exc:
-                logger.debug("Force rescan for %s failed after retries: %s", mac, last_exc)
+                logger.error("Force rescan for %s failed after all retries: %s", mac, last_exc)
+                self._failed_scan_count += 1
             return None
 
     async def _connect_new_session__ble(
@@ -286,6 +436,7 @@ class NukiDevice:
         # 1) First try: cached device (fast path)
         dev = await self._find_ble_device__ble(mac)
         if not dev:
+            logger.warning("Device %s not found in initial scan", mac)
             raise ConnectionError(f"Device {mac} not found")
 
         try:
@@ -296,17 +447,26 @@ class NukiDevice:
                 raise
 
             # 2) Stale device path: drop cache and do a real scan, then retry
-            logger.debug(
+            logger.warning(
                 "Bleak device-path stale for %s, rescanning and retrying connect: %s", mac, e
             )
             self._ble_cache.pop(mac, None)
 
-            dev2 = await BleakScanner.find_device_by_address(mac, timeout=10.0)
+            # Use longer timeout for rescan
+            rescan_timeout = 15.0 if self._failed_scan_count == 0 else 30.0
+            logger.info("Attempting rescan with timeout %.1fs", rescan_timeout)
+            dev2 = await BleakScanner.find_device_by_address(mac, timeout=rescan_timeout)
             if not dev2:
+                logger.error(
+                    "Device %s not found after rescan (timeout: %.1fs)", mac, rescan_timeout
+                )
+                self._failed_scan_count += 1
                 raise ConnectionError(f"Device {mac} not found (after rescan)")
 
             # refresh cache too
             self._ble_cache[mac] = _BleCacheEntry(device=dev2, ts=time.time())
+            self._failed_scan_count = 0
+            logger.info("Successfully found device %s after rescan", mac)
             return await _make_and_connect(dev2)
 
     async def _get_session__ble(self, mac: str, app_id: int, name: str) -> pyNukiBT.NukiDevice:
@@ -492,28 +652,45 @@ class NukiDevice:
                         crit, pct = self._parse_battery(last_state)
                         self._store_battery(mac_address, crit, pct)
 
+                        # Record success for auto-reset manager
+                        self._bt_reset_manager.record_success()
+
                         return True, message
 
                     except Exception as e:
                         if attempt == 1 and self._is_device_not_found(e):
-                            logger.info(
+                            logger.warning(
                                 "BLE device-path lost for %s, "
                                 "forcing rescan + reconnect and retrying action",
                                 mac_address,
                             )
                             await self._drop_session__ble(mac_address)
+                            # Clear entire cache to force fresh discovery
+                            self._ble_cache.clear()
+                            logger.info("Cleared entire BLE cache to force fresh discovery")
                             await self._force_rescan__ble(mac_address)
                             # loop continues to attempt 2
                             continue
 
                         logger.error(
-                            "Failed to execute action %s for %s: %s",
+                            "Failed to execute action %s for"
+                            "%s after retries: %s (failed_scan_count=%d)",
                             action,
                             mac_address,
                             e,
+                            self._failed_scan_count,
                             exc_info=True,
                         )
                         await self._drop_session__ble(mac_address)
+                        # Clear cache on final failure to avoid stale data
+                        self._ble_cache.pop(mac_address, None)
+
+                        # Trigger automatic Bluetooth reset if too many failures
+                        if self._bt_reset_manager.record_failure():
+                            logger.info(
+                                "Automatic Bluetooth reset triggered, please retry in 10 seconds"
+                            )
+
                         return False, str(e)
 
         return await self._worker.run(_do_action__ble())
@@ -552,7 +729,13 @@ class NukiDevice:
                         "Failed to update status for %s: %s", mac_address, e, exc_info=True
                     )
                     await self._drop_session__ble(mac_address)
-                    return {}
+
+                    # Trigger automatic Bluetooth reset if too many failures
+                    if "not found" in str(e).lower() or isinstance(e, ConnectionError):
+                        if self._bt_reset_manager.record_failure():
+                            logger.info("Automatic Bluetooth reset triggered during status update")
+
+                    raise
 
         return await self._worker.run(_do_status__ble())
 

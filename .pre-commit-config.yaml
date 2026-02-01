@@ -17,7 +17,7 @@ repos:
     rev: 25.12.0
     hooks:
       - id: black
-        language_version: python3.13
+        language_version: python3
 
   # Import sorting with isort
   - repo: https://github.com/pycqa/isort
