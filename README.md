@@ -1,3 +1,6 @@
+> [!CAUTION]
+> Migrated to https://git.nerdberg.de/Nerdberg/Nerdlock
+
 # Nerdlock
 
 Türsteuerung für den Schacht 2 des Nerdberges mit Nuki Smart Locks, Passkeys und Rollenverwaltung.
